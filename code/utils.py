@@ -229,7 +229,7 @@ def assemble_raw_explanations(explanations_raw):
         ret.append(f"({expl})")
     return " | ".join(ret)
 
-def plot_molecule(data, adj=None, node_features=None):
+def plot_molecule(data, adj=None, node_features=None, composite_plot=False):
     if adj is None and node_features is None:
         G = to_networkx(data)
     else:
@@ -238,7 +238,24 @@ def plot_molecule(data, adj=None, node_features=None):
     max_label = node_label.max() + 1
     nmb_nodes = len(node_label)
     
-    colors = ['orange','red','lime','green','blue','orchid','darksalmon','darkslategray','gold','bisque','tan','lightseagreen','indigo','navy']
+    colors = ['orange','red','lime','green','lightseagreen','orchid','darksalmon','darkslategray','gold','bisque','tan','blue','indigo','navy']
+    color_to_atom = {
+        'orange': "C",
+        'red': "O",
+        'lime': "Cl",
+        'green': "H",
+        'lightseagreen': "N",
+        'orchid': "F",
+        'darksalmon': "Br",
+        'darkslategray': "S",
+        'gold': "P",
+        'bisque': "I",
+        'tan': "Na",
+        'blue': "K",
+        'indigo': "Li",
+        'navy': "Ca"
+    }
+
     label2nodes = []
     for i in range(max_label):
         label2nodes.append([])
@@ -259,8 +276,11 @@ def plot_molecule(data, adj=None, node_features=None):
                                nodelist=node_filter,
                                node_color=colors[i],
                                node_size=300)
-        nx.draw_networkx_labels(G, pos, {k:k for k in node_filter})
+        nx.draw_networkx_labels(G, pos, {k:color_to_atom[colors[i]] for k in node_filter})
 
-    nx.draw_networkx_edges(G, pos, width=2,  edge_color='grey')
-    plt.axis('off')
-    plt.show()
+    nx.draw_networkx_edges(G, pos, width=2, edge_color='grey')
+    plt.box(False)
+
+    if not composite_plot:
+        plt.axis('off')
+        plt.show()
