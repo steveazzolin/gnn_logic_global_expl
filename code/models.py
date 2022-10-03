@@ -107,8 +107,8 @@ class GlobalExplainer(torch.nn.Module):
             
             new_belonging = torch.tensor(utils.normalize_belonging(data.graph_id), dtype=torch.long, device=self.device)
             y = scatter(data.task_y, new_belonging, dim=0, reduce="max")
-            y2 = scatter(data.task_y, new_belonging, dim=0, reduce="min")
-            assert torch.all(y == y2) #sanity check
+            #y2 = scatter(data.task_y, new_belonging, dim=0, reduce="min")
+            #assert torch.all(y == y2) #sanity check
             y_train_1h = torch.nn.functional.one_hot(y.long(), num_classes=2).float().to(self.device)
             
             prototype_assignements = utils.prototype_assignement(self.hyper["assign_func"], le_embeddings, self.prototype_vectors, temp=1)
@@ -269,7 +269,7 @@ class GlobalExplainer(torch.nn.Module):
         return loss, r1_loss , r2_loss , debug_loss
         
         
-    def iterate(self, num_epochs, log_wandb=False, name_wandb=""):
+    def iterate(self, num_epochs, log_wandb=False, name_wandb="", save_metrics=True, plot=False):
         if log_wandb:
             self.run = wandb.init(
                     project='GlobalGraphXAI',
@@ -290,7 +290,7 @@ class GlobalExplainer(torch.nn.Module):
             val_metrics   = self.train_epoch(self.val_dataloader, epoch, log_wandb, train=False)
             
             if epoch % 20 == 0:
-                self.inspect_embedding(self.dataloader, log_wandb)
+                self.inspect_embedding(self.dataloader, log_wandb, plot=plot)
                 self.inspect_embedding(self.val_dataloader, log_wandb=False, plot=False, is_train_set=False)
                 
             self.temp -= (self.hyper["ts"] - self.hyper["te"]) / num_epochs
@@ -319,14 +319,15 @@ class GlobalExplainer(torch.nn.Module):
                 wandb.save(f'{wandb.run.dir}/epoch_*.pt')
             self.run.finish()  
         
-        with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_metrics.pkl', 'wb') as handle:
-            pickle.dump(self.train_metrics, handle)
-        with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_metrics.pkl', 'wb') as handle:
-            pickle.dump(self.val_metrics, handle)        
-        with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_logic_metrics.pkl', 'wb') as handle:
-            pickle.dump(self.train_logic_metrics, handle)        
-        with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_logic_metrics.pkl', 'wb') as handle:
-            pickle.dump(self.val_logic_metrics, handle)        
+        if save_metrics and False:
+            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_metrics.pkl', 'wb') as handle:
+                pickle.dump(self.train_metrics, handle)
+            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_metrics.pkl', 'wb') as handle:
+                pickle.dump(self.val_metrics, handle)        
+            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_logic_metrics.pkl', 'wb') as handle:
+                pickle.dump(self.train_logic_metrics, handle)        
+            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_logic_metrics.pkl', 'wb') as handle:
+                pickle.dump(self.val_logic_metrics, handle)     
         return
 
     
@@ -350,20 +351,20 @@ class GlobalExplainer(torch.nn.Module):
                 emb2d = emb if self.prototype_vectors.shape[1] == 2 else pca.fit_transform(emb) #emb
                 fig = plt.figure(figsize=(17,4))
                 plt.subplot(1,2,1)
-                plt.title("local explanations embeddings", size=18)
+                plt.title("local explanations embeddings", size=23)
                 print(np.unique(le_classes, return_counts=True))
                 for c in np.unique(le_classes):
-                    plt.scatter(emb2d[le_classes == c,0], emb2d[le_classes == c,1], label=self.classes_names[int(c)])
+                    plt.scatter(emb2d[le_classes == c,0], emb2d[le_classes == c,1], label=self.classes_names[int(c)], alpha=0.7)
                 proto_2d = self.prototype_vectors.cpu().numpy() if self.prototype_vectors.shape[1] == 2 else pca.transform(self.prototype_vectors.cpu().numpy())
                 plt.scatter(proto_2d[:, 0], proto_2d[:,1], marker="x", s=60, c="black")        
                 for i, txt in enumerate(range(proto_2d.shape[0])):
-                    plt.annotate("p" + str(i), (proto_2d[i,0]+0.01, proto_2d[i,1]+0.01), size=15)
-                plt.legend(bbox_to_anchor=(0.01,1), prop={'size': 12})
+                    plt.annotate("p" + str(i), (proto_2d[i,0]+0.01, proto_2d[i,1]+0.01), size=27)
+                plt.legend(bbox_to_anchor=(0.04,1), prop={'size': 17})
                 plt.subplot(1,2,2)
-                plt.title("prototype assignments", size=18)
+                plt.title("prototype assignments", size=23)
                 for c in range(self.prototype_vectors.shape[0]):
                     plt.scatter(emb2d[concept_predictions == c,0], emb2d[concept_predictions == c,1], label="p"+str(c))
-                plt.legend(prop={'size': 12})
+                plt.legend(prop={'size': 17})
                 # plt.subplot(1,3,3)
                 # plt.title("predictions")
                 # idx_belonging_correct = y_train_1h[:, :].eq(y_pred[:, :] > 0).sum(1) == 2 #y_pred.argmax(1) == y_train_1h.argmax(1)
@@ -380,9 +381,9 @@ class GlobalExplainer(torch.nn.Module):
                 # if log_wandb and self.hyper["log_images"]: 
                 #     wandb.log({"plots": wandb.Image(plt)})
                 # if self.prototype_vectors.shape[1] > 2: print(pca.explained_variance_ratio_)
-                fig.supxlabel('principal comp. 1', size=15)
-                fig.supylabel('principal comp. 2', size=15)
-                #plt.savefig("embedding_multishapes.pdf")
+                fig.supxlabel('principal comp. 1', size=20)
+                #fig.supylabel('principal comp. 2', size=20)                
+                #plt.savefig("embedding_mutagenicity.pdf")
                 plt.show()          
 
 

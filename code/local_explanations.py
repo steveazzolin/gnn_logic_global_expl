@@ -147,7 +147,6 @@ def read_bamultishapes(explainer="PGExplainer", dataset="BA_multipleShapes_with_
     
     global summary_predictions
     summary_predictions = {"correct": [], "wrong": []}
-    
 
     num_multi_shapes_removed , num_class_relationship_broken , cont_num_iter , num_iter = 0 , 0 , 0 , 0
     for split in [split]:
@@ -175,9 +174,9 @@ def read_bamultishapes(explainer="PGExplainer", dataset="BA_multipleShapes_with_
                 added = 0
                 graph_labels = label_explanation(g, house, grid, wheel, return_raw=True)
                 gnn_pred = int(pp.split("_")[0])
-                if gnn_pred != int(c):
-                    summary_predictions["wrong"].append(assign_class(graph_labels))
-                    continue
+                #if gnn_pred != int(c):
+                #    summary_predictions["wrong"].append(assign_class(graph_labels))
+                #    continue
                 summary_predictions["correct"].append(assign_class(graph_labels))
                 total_cc_labels.append([])
                 cc_labels = []
@@ -212,7 +211,7 @@ def read_bamultishapes(explainer="PGExplainer", dataset="BA_multipleShapes_with_
                     num_iter += 1
                     ori_adjs.append(adj)            
                     ori_edge_weights.append(nx.get_edge_attributes(g,"weight"))
-                    ori_classes.append(c) #c | gnn_pred
+                    ori_classes.append(gnn_pred) #c | gnn_pred
                     for lbl in graph_labels:
                         if lbl not in cc_labels:
                             num_class_relationship_broken += 1
@@ -257,9 +256,9 @@ def read_mutagenicity(explainer="PGExplainer", model="GCN_TF", split="TRAIN", ev
             for pp in os.listdir(path + c + "/"):
                 graph_id = int(pp.split("_")[1].split(".")[0])
                 gnn_pred = int(pp.split("_")[0])
-                if gnn_pred != int(c):
-                    summary_predictions["wrong"].append(int(c))
-                    continue
+                #if gnn_pred != int(c):
+                #    summary_predictions["wrong"].append(int(c))
+                #    continue
                 summary_predictions["correct"].append(int(c))
                 adj = np.load(path + c + "/" + pp, allow_pickle=True)
                 features = np.load(path + "features" + "/" + pp, allow_pickle=True)
@@ -345,7 +344,7 @@ def read_mutagenicity(explainer="PGExplainer", model="GCN_TF", split="TRAIN", ev
                     ori_adjs.append(adj)
                     ori_embeddings.append(features)
                     ori_edge_weights.append(nx.get_edge_attributes(g,"weight"))
-                    ori_classes.append(gnn_pred) #c | gnn_pred 
+                    ori_classes.append(c) #c | gnn_pred 
                 else:
                     #print(graph_id, masked.sum(), len(connected_components), adj.shape[0], )
                     pass
@@ -390,9 +389,9 @@ def read_etn(explainer="PGExplainer", model="GCN", split="TRAIN", min_num_includ
             for pp in os.listdir(path + c + "/"):
                 graph_id = int(pp.split("_")[1].split(".")[0])
                 gnn_pred = int(pp.split("_")[0])
-                if gnn_pred != int(c):
-                    summary_predictions["wrong"].append(int(c))
-                    continue
+                #if gnn_pred != int(c):
+                #    summary_predictions["wrong"].append(int(c))
+                #    continue
                 summary_predictions["correct"].append(int(c))
                 adj = np.load(path + c + "/" + pp, allow_pickle=True)
                 features = np.load(path + "features" + "/" + pp, allow_pickle=True)
