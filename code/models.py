@@ -1,10 +1,10 @@
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import SAGEConv, GCNConv, global_mean_pool, global_add_pool, global_max_pool, GATConv, GINConv, GATv2Conv
+from torch_geometric.nn import SAGEConv, GCNConv, global_mean_pool, global_add_pool, global_max_pool, GINConv, GATv2Conv, GraphConv
 from torch_scatter import scatter
 import torch_explain as te
 from torch_explain.logic.nn import entropy
-from torch_explain.logic.metrics import test_explanation, complexity, test_explanations
+from torch_explain.logic.metrics import test_explanation, test_explanations
 from sklearn.metrics import accuracy_score
 from sklearn.decomposition import PCA
 from scipy.stats import hmean
@@ -13,13 +13,12 @@ import matplotlib.patches as mpatches
 import numpy as np
 import wandb
 import time
-import pickle
 import utils
 
 
 
 
-class GlobalExplainer(torch.nn.Module):
+class GLGExplainer(torch.nn.Module):
     def __init__(self, len_model, le_model, dataloader, val_dataloader, device, hyper_params, classes_names, dataset_name):
         super().__init__()        
         
@@ -36,6 +35,7 @@ class GlobalExplainer(torch.nn.Module):
         self.dataloader = dataloader
         self.val_dataloader = val_dataloader
         self.classes_names = classes_names
+        self.num_classes = len(dataloader.dataset.data.task_y.unique())
         self.dataset_name = dataset_name
         self.temp = hyper_params["ts"]
         self.assign_func = hyper_params["assign_func"]
@@ -48,7 +48,12 @@ class GlobalExplainer(torch.nn.Module):
         if hyper_params["focal_loss"]:
             self.loss_len = utils.focal_loss
         else:
-            self.loss_len = utils.BCEWithLogitsLoss
+            if self.num_classes == 2:
+                self.loss_len = utils.BCEWithLogitsLoss
+            elif self.num_classes == 3:
+                self.loss_len = utils.CEWithLogitsLoss
+            else:
+                raise NotImplementedError("num_classes implemented <= 3")
         
         
     def get_concept_vector(self, loader, return_raw=False):
@@ -78,7 +83,7 @@ class GlobalExplainer(torch.nn.Module):
             return concept_vector , le_embeddings
 
     
-    def train_epoch(self, loader, epoch, log_wandb=False, train=True):   
+    def train_epoch(self, loader, epoch, train=True):   
         if train:
             self.le_model.train()
             self.len_model.train()
@@ -109,7 +114,7 @@ class GlobalExplainer(torch.nn.Module):
             y = scatter(data.task_y, new_belonging, dim=0, reduce="max")
             #y2 = scatter(data.task_y, new_belonging, dim=0, reduce="min")
             #assert torch.all(y == y2) #sanity check
-            y_train_1h = torch.nn.functional.one_hot(y.long(), num_classes=2).float().to(self.device)
+            y_train_1h = torch.nn.functional.one_hot(y.long(), num_classes=self.num_classes).float().to(self.device)
             
             prototype_assignements = utils.prototype_assignement(self.hyper["assign_func"], le_embeddings, self.prototype_vectors, temp=1)
             total_prototype_assignements = torch.cat([total_prototype_assignements, prototype_assignements], dim=0)
@@ -215,7 +220,7 @@ class GlobalExplainer(torch.nn.Module):
             acc_overall = 0
         else:
             acc_per_class = accuracy_score(trues.argmax(-1).cpu(), preds.argmax(-1).cpu())
-            acc_overall = sum(trues[:, :].eq(preds[:, :] > 0).sum(1) == 2) / len(preds)
+            acc_overall = sum(trues[:, :].eq(preds[:, :] > 0).sum(1) == self.num_classes) / len(preds)
         
         cluster_acc = utils.get_cluster_accuracy(
             total_prototype_assignements.argmax(1).detach().cpu().numpy(), 
@@ -240,7 +245,7 @@ class GlobalExplainer(torch.nn.Module):
                     "concept_vector": wandb.Histogram(concept_vector.detach().cpu()),
                    }
             
-        if log_wandb:
+        if self.hyper["log_wandb"]:
             k = "train" if train else "val"
             self.log({k: metrics}) 
         else:
@@ -269,14 +274,14 @@ class GlobalExplainer(torch.nn.Module):
         return loss, r1_loss , r2_loss , debug_loss
         
         
-    def iterate(self, num_epochs, log_wandb=False, name_wandb="", save_metrics=True, plot=False):
-        if log_wandb:
+    def iterate(self, num_epochs, name_wandb="", config_wandb=None, save_metrics=True, plot=False):
+        if self.hyper["log_wandb"]:
             self.run = wandb.init(
-                    project='GlobalGraphXAI',
+                    project=config_wandb["project_name"],
                     name=name_wandb,
-                    entity='mcstewe',
-                    reinit=True,
-                    save_code=True,
+                    entity=config_wandb["entity_name"],
+                    reinit=config_wandb["reinit"],
+                    save_code=config_wandb["save_code"],
                     config=self.hyper
             )
             wandb.watch(self.le_model)
@@ -286,25 +291,26 @@ class GlobalExplainer(torch.nn.Module):
         start_time = time.time()
         best_val_loss = np.inf
         for epoch in range(1, num_epochs):
-            train_metrics = self.train_epoch(self.dataloader, epoch, log_wandb)
-            val_metrics   = self.train_epoch(self.val_dataloader, epoch, log_wandb, train=False)
+            train_metrics = self.train_epoch(self.dataloader, epoch)
+            val_metrics   = self.train_epoch(self.val_dataloader, epoch, train=False)
             
             if epoch % 20 == 0:
-                self.inspect_embedding(self.dataloader, log_wandb, plot=plot)
+                self.inspect_embedding(self.dataloader, self.hyper["log_wandb"], plot=plot)
                 self.inspect_embedding(self.val_dataloader, log_wandb=False, plot=False, is_train_set=False)
                 
             self.temp -= (self.hyper["ts"] - self.hyper["te"]) / num_epochs
-            if log_wandb and self.hyper["log_models"]:
+            if self.hyper["log_wandb"] and self.hyper["log_models"]:
                 torch.save(self.state_dict(), f"{wandb.run.dir}/epoch_{epoch}.pt")  
             if val_metrics["loss"] < best_val_loss and self.hyper["log_models"]:
                 best_val_loss = val_metrics["loss"]
                 torch.save(self.state_dict(), f"../trained_models/best_so_far_{self.dataset_name}_epoch_{epoch}.pt")
+
             print(f'{epoch:3d}: Loss: {train_metrics["loss"]:.5f}, LEN: {train_metrics["len_loss"]:2f}, AccxC: {train_metrics["acc_per_class"]:.2f}, AccO: {train_metrics["acc_overall"]:.2f}, V. Acc: {val_metrics["acc_overall"]:.2f}, V. Loss: {val_metrics["loss"]:.5f}, V. LEN {val_metrics["len_loss"]:.2f}')
                 
             if self.early_stopping.on_epoch_end(epoch, val_metrics["loss"]):
                 print(f"Early Stopping")
                 print(f"Loading model at epoch {self.early_stopping.best_epoch}")
-                if log_wandb and self.hyper["log_models"]:
+                if self.hyper["log_wandb"] and self.hyper["log_models"]:
                     self.load_state_dict(torch.load(f"{wandb.run.dir}/epoch_{self.early_stopping.best_epoch}.pt"))
                 elif self.hyper["log_models"]:
                     self.load_state_dict(torch.load(f"../trained_models/best_so_far_{self.dataset_name}_epoch_{self.early_stopping.best_epoch}.pt"))
@@ -314,39 +320,34 @@ class GlobalExplainer(torch.nn.Module):
         print(f"Best epoch: {self.early_stopping.best_epoch}")   
         print(f"Trained lasted for {round(time.time() - start_time)} seconds")
                 
-        if log_wandb:
+        if self.hyper["log_wandb"]:
             if self.hyper["log_models"]:
                 wandb.save(f'{wandb.run.dir}/epoch_*.pt')
             self.run.finish()  
         
-        if save_metrics and False:
-            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_metrics.pkl', 'wb') as handle:
-                pickle.dump(self.train_metrics, handle)
-            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_metrics.pkl', 'wb') as handle:
-                pickle.dump(self.val_metrics, handle)        
-            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_logic_metrics.pkl', 'wb') as handle:
-                pickle.dump(self.train_logic_metrics, handle)        
-            with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_logic_metrics.pkl', 'wb') as handle:
-                pickle.dump(self.val_logic_metrics, handle)     
+        # if save_metrics:
+        #     with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_metrics.pkl', 'wb') as handle:
+        #         pickle.dump(self.train_metrics, handle)
+        #     with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_metrics.pkl', 'wb') as handle:
+        #         pickle.dump(self.val_metrics, handle)        
+        #     with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_train_logic_metrics.pkl', 'wb') as handle:
+        #         pickle.dump(self.train_logic_metrics, handle)        
+        #     with open(f'../logs/ablation/num_proto/{self.dataset_name}/{self.hyper["num_prototypes"]}_val_logic_metrics.pkl', 'wb') as handle:
+        #         pickle.dump(self.val_logic_metrics, handle)     
         return
 
     
     def inspect_embedding(self, loader, log_wandb=False, plot=True, is_train_set=False):
-        self.le_model.eval()
-        self.len_model.eval()
-        
-        x_train , emb , concepts_assignement , y_train_1h , le_classes , le_idxs , belonging = self.get_concept_vector(loader, return_raw=True)        
-        y_pred = self.len_model(x_train).squeeze(-1)
-        #loss = self.loss_len(y_pred, y_train_1h, self.hyper["focal_gamma"], self.hyper["focal_alpha"])
-        #grads = torch.autograd.grad(outputs=loss, inputs=emb, grad_outputs=torch.ones_like(loss))[0].detach().cpu().numpy()
-        #grads = np.zeros(emb.shape)
+        self.eval()
         
         with torch.no_grad():
+            x_train , emb , concepts_assignement , y_train_1h , le_classes , le_idxs , belonging = self.get_concept_vector(loader, return_raw=True)        
+            y_pred = self.len_model(x_train).squeeze(-1)
+
             emb = emb.detach().cpu().numpy()
             concept_predictions = concepts_assignement.argmax(1).cpu().numpy()
         
-            if plot:
-                # plot embedding
+            if plot: # plot embedding                
                 pca = PCA(n_components=2, random_state=42)
                 emb2d = emb if self.prototype_vectors.shape[1] == 2 else pca.fit_transform(emb) #emb
                 fig = plt.figure(figsize=(17,4))
@@ -365,6 +366,7 @@ class GlobalExplainer(torch.nn.Module):
                 for c in range(self.prototype_vectors.shape[0]):
                     plt.scatter(emb2d[concept_predictions == c,0], emb2d[concept_predictions == c,1], label="p"+str(c))
                 plt.legend(prop={'size': 17})
+
                 # plt.subplot(1,3,3)
                 # plt.title("predictions")
                 # idx_belonging_correct = y_train_1h[:, :].eq(y_pred[:, :] > 0).sum(1) == 2 #y_pred.argmax(1) == y_train_1h.argmax(1)
@@ -378,20 +380,20 @@ class GlobalExplainer(torch.nn.Module):
                 # plt.scatter(emb2d[:, 0], emb2d[:, 1], c=colors)
                 # patches = [mpatches.Patch(color='blue', label='correct'), mpatches.Patch(color='red', label='wrong')]
                 # plt.legend(handles=patches)
-                # if log_wandb and self.hyper["log_images"]: 
-                #     wandb.log({"plots": wandb.Image(plt)})
-                # if self.prototype_vectors.shape[1] > 2: print(pca.explained_variance_ratio_)
+
+                if log_wandb and self.hyper["log_images"]: 
+                    wandb.log({"plots": wandb.Image(plt)})
+                if self.prototype_vectors.shape[1] > 2: print(pca.explained_variance_ratio_)
                 fig.supxlabel('principal comp. 1', size=20)
-                #fig.supylabel('principal comp. 2', size=20)                
-                #plt.savefig("embedding_mutagenicity.pdf")
-                plt.show()          
+                fig.supylabel('principal comp. 2', size=20)                
+                #plt.savefig("embedding_bamultishapesmc.pdf")
+                plt.show()         
 
 
             #log stats
             if isinstance(self.len_model[0], te.nn.logic.EntropyLinear) and plot:
                 print("Alpha norms:")
                 print(self.len_model[0].alpha_norm)
-
             
             x_train = x_train.detach()
             explanation0, explanation_raw, _ = entropy.explain_class(self.len_model.cpu(), x_train.cpu(), y_train_1h.cpu(), train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=0, max_accuracy=True, topk_explanations=3000, try_all=False)
@@ -412,9 +414,17 @@ class GlobalExplainer(torch.nn.Module):
                 print("For class 1:")
                 print(accuracy2, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
 
-            accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1], x_train.cpu(), y_train_1h.cpu(), model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+            if self.num_classes == 3:
+                explanation3, explanation_raw, _ = entropy.explain_class(self.len_model.cpu(), x_train.cpu(), y_train_1h.cpu(), train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=2, max_accuracy=True, topk_explanations=3000, try_all=False)
+                accuracy3, preds = test_explanation(explanation3, x_train.cpu(), y_train_1h.cpu(), target_class=2, mask=torch.arange(x_train.shape[0]).long(), material=False)
+                if plot:
+                    print("For class 2:")
+                    print(accuracy3, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
+                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1, explanation3], x_train.cpu(), y_train_1h.cpu(), model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+            else:
+                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1], x_train.cpu(), y_train_1h.cpu(), model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
             if plot: print("Accuracy as classifier: ", round(accuracy, 4))
-            if plot: print("LEN fidelity: ", sum(y_train_1h[:, :].eq(y_pred[:, :] > 0).sum(1) == 2) / len(y_pred))
+            if plot: print("LEN fidelity: ", sum(y_train_1h[:, :].eq(y_pred[:, :] > 0).sum(1) == self.num_classes) / len(y_pred))
             
             print()
             if log_wandb: self.log({"train": {'logic_acc': hmean([accuracy1, accuracy2]), "logic_acc_clf": accuracy}}) 
@@ -424,7 +434,6 @@ class GlobalExplainer(torch.nn.Module):
                 else:
                     self.val_logic_metrics.append({'logic_acc': hmean([accuracy1, accuracy2]), "logic_acc_clf": accuracy, "concept_purity": np.mean(accs), "concept_purity_std": np.std(accs)})
         self.len_model.to(self.device)
-        #return local_explanations_0 , local_explanations_raw_0 , local_explanations_1 , local_explanations_raw_1
         
     def log(self, msg):
         wandb.log(msg)
@@ -432,25 +441,6 @@ class GlobalExplainer(torch.nn.Module):
     def eval(self):
         self.le_model.eval()
         self.len_model.eval()
-        
-# nn = torch.nn.Sequential(
-#     torch.nn.Linear(num_features, num_gnn_hidden),
-#     torch.nn.LeakyReLU(),
-#     torch.nn.Dropout(dropout)
-# )
-# nn2 = torch.nn.Sequential(
-#     torch.nn.Linear(num_gnn_hidden, num_gnn_hidden),
-#     torch.nn.LeakyReLU(),
-#     torch.nn.Dropout(dropout)
-# )
-# nn3 = torch.nn.Sequential(
-#     torch.nn.Linear(num_gnn_hidden, num_gnn_hidden),
-#     torch.nn.LeakyReLU(),
-#     torch.nn.Dropout(dropout)
-# )
-# self.conv1 = GINConv(nn, train_eps=False) #, edge_dim=1
-# self.conv2 = GINConv(nn2, train_eps=False)
-# self.conv3 = GINConv(nn3, train_eps=False)   
 
 
 class LEEmbedder(torch.nn.Module):
@@ -472,6 +462,22 @@ class LEEmbedder(torch.nn.Module):
         elif backbone == "GAT":
             self.convs = torch.nn.ModuleList([
                 GATv2Conv(num_features if i == 0 else num_gnn_hidden, int(num_gnn_hidden/4), heads=4) for i in range(num_layers)
+            ])
+        elif backbone == "SAGE":
+            self.convs = torch.nn.ModuleList([
+                SAGEConv(num_features if i == 0 else num_gnn_hidden, num_gnn_hidden) for i in range(num_layers)
+            ])
+        elif backbone == "SAGE_sum":
+            self.convs = torch.nn.ModuleList([
+                SAGEConv(num_features if i == 0 else num_gnn_hidden, num_gnn_hidden, aggr="add") for i in range(num_layers)
+            ])
+        elif backbone == "GCN":
+            self.convs = torch.nn.ModuleList([
+                GCNConv(num_features if i == 0 else num_gnn_hidden, num_gnn_hidden) for i in range(num_layers)
+            ])
+        elif backbone == "GraphConv":
+            self.convs = torch.nn.ModuleList([
+                GraphConv(num_features if i == 0 else num_gnn_hidden, num_gnn_hidden) for i in range(num_layers)
             ])
         else:
             raise ValueError("Backbone not available") 
@@ -513,23 +519,13 @@ class LEEmbedder(torch.nn.Module):
     
 
 
-def LEN(input_shape, temperature, remove_attention=False):
+def LEN(input_shape, temperature, n_classes=2, remove_attention=False):
     layers = [
-        te.nn.EntropyLinear(input_shape, 10, n_classes=2, temperature=temperature, remove_attention=remove_attention),
+        te.nn.EntropyLinear(input_shape, 10, n_classes=n_classes, temperature=temperature, remove_attention=remove_attention),
         torch.nn.LeakyReLU(),
         torch.nn.Linear(10, 5),
         torch.nn.LeakyReLU(),
         torch.nn.Linear(5, 1),
-    ]
-    return torch.nn.Sequential(*layers)
-
-def MLP(input_shape):
-    layers = [
-        torch.nn.Linear(input_shape, 10),
-        torch.nn.LeakyReLU(),
-        torch.nn.Linear(10, 5),
-        torch.nn.LeakyReLU(),
-        torch.nn.Linear(5, 2),
     ]
     return torch.nn.Sequential(*layers)
 

@@ -1,5 +1,6 @@
 import torch
-from torch_geometric.data import InMemoryDataset, download_url, Data
+from torch_geometric.data import InMemoryDataset, Data
+from torch_geometric.loader import DataLoader
 from torch_geometric.utils import from_networkx, to_networkx
 import numpy as np
 import networkx as nx
@@ -120,6 +121,12 @@ class EarlyStopping():
         return self.stop_training
 
 
+
+def build_dataloader(dataset, belonging, num_input_graphs):
+    batch_sampler = GroupBatchSampler(num_input_graphs=num_input_graphs, drop_last=False, belonging=np.array(belonging))
+    return DataLoader(dataset, batch_sampler=batch_sampler)
+
+
 def pairwise_dist(embeddings, squared=False):
     dot_prod = embeddings.mm(embeddings.T)
     square_norm = dot_prod.diag()
@@ -132,7 +139,7 @@ def pairwise_dist(embeddings, squared=False):
         dist = dist * (1 - mask) # Correct the epsilon added: set the distances on the mask to be 0
     return dist
 
-def func(x):
+def inverse(x):
     x = 1 / (x+0.0000001)
     return x / x.sum(-1).unsqueeze(1)
 
@@ -143,7 +150,7 @@ def prototype_assignement(assign_func, le_embeddings, prototype_vectors, temp):
     if assign_func == "softmax*10":
         le_assignments = F.softmax(-torch.nn.functional.normalize(torch.cdist(le_embeddings, prototype_vectors, p=2))*10 , dim=-1)
     elif assign_func == "1/x":
-        le_assignments = func(torch.cdist(le_embeddings, prototype_vectors, p=2)) # 1/x
+        le_assignments = inverse(torch.cdist(le_embeddings, prototype_vectors, p=2)) # 1/x
     elif assign_func == "sim": #from ProtoPNet
         dist = torch.cdist(le_embeddings, prototype_vectors, p=2)**2
         sim = torch.log((dist + 1) / (dist + 1e-6))
@@ -152,7 +159,7 @@ def prototype_assignement(assign_func, le_embeddings, prototype_vectors, temp):
         dist = torch.cdist(le_embeddings, prototype_vectors, p=2)**2
         sim = torch.log((dist + 1) / (dist + 1e-6))
         le_assignments = F.gumbel_softmax(sim, tau=temp, hard=True)
-    elif assign_func == "straight_sim":
+    elif assign_func == "discrete":
         dist = torch.cdist(le_embeddings, prototype_vectors, p=2)**2
         sim = torch.log((dist + 1) / (dist + 1e-6))
         y_soft = F.softmax(sim / temp , dim=-1)
@@ -184,6 +191,10 @@ def focal_loss(logits, targets, gamma, alpha):
 
 def BCEWithLogitsLoss(logits, targets, gamma, alpha):
     loss = F.binary_cross_entropy_with_logits(logits, targets)
+    return loss
+
+def CEWithLogitsLoss(logits, targets, gamma, alpha):
+    loss = F.cross_entropy(logits, targets)
     return loss
 
 @torch.no_grad()
@@ -284,3 +295,25 @@ def plot_molecule(data, adj=None, node_features=None, composite_plot=False):
     if not composite_plot:
         plt.axis('off')
         plt.show()
+
+
+def convert_hin_labels(g):
+    new_dict = dict()
+    for n,x in dict(nx.get_node_attributes(g,"x")).items():
+        if x[0]==1:
+            new_dict[n]="D"
+        if x[1]==1:
+            new_dict[n]="P"
+        if x[2]==1:
+            new_dict[n]="A"
+        if x[3]==1:
+            new_dict[n]="N"
+        if x[4]==1:
+            new_dict[n]="Ego"
+    return new_dict
+
+def plot_etn(data, ax=None):
+    G = to_networkx(data, node_attrs=["x"], to_undirected=True)
+    pos = nx.kamada_kawai_layout(G)
+    nx.draw(G, pos, node_color="orange", node_size=400, ax=ax)
+    nx.draw_networkx_labels(G, pos, {k:v for k,v in convert_hin_labels(G).items() if k in G.nodes()}, font_size=18, font_color="black", ax=ax)
