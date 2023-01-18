@@ -4,3 +4,4 @@ local_explanations/BA_multipleShapes_MC_circle_triangle_with_pred/
 local_explanations/BA_multipleShapes_MC_circle_triangle_with_pred_128hidden/
 local_explanations/MUTAG/
 local_explanations/BA_multipleShapes_maxAcc_with_pred/
+imgs/*
