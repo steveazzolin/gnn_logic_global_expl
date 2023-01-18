@@ -4,4 +4,10 @@ local_explanations/BA_multipleShapes_MC_circle_triangle_with_pred/
 local_explanations/BA_multipleShapes_MC_circle_triangle_with_pred_128hidden/
 local_explanations/MUTAG/
 local_explanations/BA_multipleShapes_maxAcc_with_pred/
-imgs/*
+code/imgs/*
+logs/*
+trained_models/BAMultiShapes_maxaccuracy.pt
+trained_models/BAMultiShapesMC.pt
+trained_models/BAMultiShapes.pt
+trained_models/HIN.pt
+trained_models/Mutagenicity.pt
