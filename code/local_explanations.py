@@ -7,6 +7,8 @@ from networkx.generators import classic
 from collections import defaultdict
 import utils
 
+base = "../local_explanations/"
+
 house = nx.Graph()
 house.add_edge(0,1)
 house.add_edge(0,2)
@@ -16,27 +18,35 @@ house.add_edge(1,4)
 house.add_edge(4,3)
 grid  = nx.grid_2d_graph(3, 3)
 wheel = classic.wheel_graph(6)
-triangle = nx.Graph()
-triangle.add_edge(0,1)
-triangle.add_edge(0,2)
-triangle.add_edge(2,1)
+
+
+pattern_no2 = nx.Graph()
+pattern_no2.add_nodes_from([
+    (0, {"atom_type": 1}),
+    (1, {"atom_type": 4}),
+    (2, {"atom_type": 1})
+])
+pattern_no2.add_edges_from([(0,1), (1,2)])
+
+pattern_nh2 = nx.Graph()
+pattern_nh2.add_nodes_from([
+    (0, {"atom_type": 3}),
+    (1, {"atom_type": 4}),
+    (2, {"atom_type": 3})
+])
+pattern_nh2.add_edges_from([(0,1), (1,2)])
 
 bamultishapes_classes_names = ["house", "grid", "wheel", "ba", "house+grid", "house+wheel", "wheel+grid", "all"]
-bamultishapes_classes_names_mc = ["house", "grid", "wheel", "circle", "triangle", "ba", "house+grid", "house+wheel", "wheel+grid", "all", "house+circle"]
 mutag_classes_names = ["NO2", "Others"]
 priori_etn_classes_names = ["M", "N", "NA", "PAT", "NP", "MN", "MP", "OTHERS"]
-#priori_etn_classes_names = ["M", "N", "MPN", "P", "NP", "MP", "MN", "AMN", "OTHERS"] #for saliency
-# priori_etn_classes_names = ['[0, 0, 0, 0]', '[0, 0, 0, 1]', '[0, 0, 0, 2]', '[0, 1, 0, 1]',
-#                             '[0, 1, 0, 2]', '[1, 0, 0, 0]', '[1, 0, 0, 1]', '[1, 0, 0, 2]',
-#                             '[1, 1, 0, 1]', '[2, 0, 0, 2]', 'OTHERS']
 posteriori_etn_classes_names = ["N", "M", "NA", "NP", "NM", "MA", "NMA", "O"]
 
 
-def elbow_method(weights, index_stopped=None, min_num_include=7, bias=None):
+def elbow_method(weights, index_stopped=None, min_num_include=7, backup=None):
     sorted_weights = sorted(weights, reverse=True)
     sorted_weights = np.convolve(sorted_weights, np.ones(min_num_include), 'valid') / min_num_include
 
-    stop = np.mean(sorted_weights) if bias is None else bias # backup threshold
+    stop = np.mean(sorted_weights) if backup is None else backup # backup threshold
     for i in range(len(sorted_weights)-2):
         if i < min_num_include:
             continue
@@ -65,23 +75,6 @@ def assign_class(pattern_matched):
         elif 1 in pattern_matched and 2 in pattern_matched: 
             return 6
 
-def assign_class_mc(pattern_matched):
-    if len(pattern_matched) == 0: #ba
-        return 3 + 2
-    elif len(pattern_matched) == 1: #single motif
-        return pattern_matched[0]
-    else:
-        assert len(pattern_matched) <= 3
-        if 0 in pattern_matched and 1 in pattern_matched and 2 in pattern_matched:
-            return 7 + 2
-        elif 0 in pattern_matched and 1 in pattern_matched: 
-            return 4 + 2
-        elif 0 in pattern_matched and 2 in pattern_matched: 
-            return 5 + 2
-        elif 1 in pattern_matched and 2 in pattern_matched: 
-            return 6 + 2
-        elif 0 in pattern_matched and 3 in pattern_matched: 
-            return 8 + 2
 
 def label_explanation(G, house, grid, wheel, return_raw=False):
     pattern_matched = []
@@ -94,31 +87,6 @@ def label_explanation(G, house, grid, wheel, return_raw=False):
     else:
         return assign_class(pattern_matched)
 
-def label_explanation_mc(G, house, grid, wheel, triangle, circle, label_sample, return_raw=False):
-    pattern_matched = []
-    list_patterns = [house, grid, wheel, circle, triangle] if label_sample == 2 else [house, grid, wheel]
-    for i , pattern in enumerate(list_patterns):
-        if i > 3 and len(pattern_matched) > 0: #avoid counting circle and triangles as subgraphs of the other motifs
-            break
-        GM = isomorphism.GraphMatcher(G, pattern)
-        if GM.subgraph_is_isomorphic():
-            if i == 3 and len(pattern_matched) > 0: #check if there is exactly one house and one circle
-                match_house = list(isomorphism.GraphMatcher(G, house).subgraph_isomorphisms_iter())
-                match_circle = list(isomorphism.GraphMatcher(G, circle).subgraph_isomorphisms_iter())
-                assert len(match_house) == 2
-                # check that the two match do not overlap
-                nodes_match_house = set(match_house[0].keys())
-                for o in range(len(match_circle)):
-                    nodes_match_circle = set(match_circle[o].keys())
-                    if len(nodes_match_house.intersection(nodes_match_circle)) == 0:
-                        pattern_matched.append(i)        
-                        break
-            else:
-                pattern_matched.append(i)
-    if return_raw:
-        return pattern_matched
-    else:
-        return assign_class_mc(pattern_matched)
 
 def label_explanations(adjs, num_graphs):
     classes = []
@@ -161,9 +129,10 @@ def evaluate_cutting(ori_adjs, adjs):
     print(f"Num shapes: {num_shapes}, Num Preserved: {num_preserved}, Ratio: {round(num_preserved/num_shapes, 3)}, Num Multipleshapes: {num_multipleshapes}")
     return round(num_preserved/num_shapes, 3)
     
-
-base = "../local_explanations/"
-def read_bamultishapes(explainer="PGExplainer", dataset="BA_multipleShapes_with_pred", model="GCN", split="TRAIN", evaluate_method=True, remove_mix=False, min_num_include=5, manual_cut=None):
+##
+# read local explanations and cut them based on a certain policy
+##
+def read_bamultishapes(explainer="PGExplainer", dataset="BAMultiShapes", model="GCN", split="TRAIN", evaluate_method=True, remove_mix=False, min_num_include=5, manual_cut=None):
     base_path = base + f"{explainer}/{dataset}/{model}/"
     adjs , edge_weights , index_stopped = [] , [] , []
     ori_adjs, ori_edge_weights, ori_classes , belonging , ori_predictions = [], [], [] , [] , []
@@ -180,13 +149,10 @@ def read_bamultishapes(explainer="PGExplainer", dataset="BA_multipleShapes_with_
         for c in ["1","0"]:
             for pp in os.listdir(path + c + "/"):
                 graph_id = int(pp.split(".")[0])
-                # gnn_pred = int(pp.split("_")[0])
-                # if gnn_pred != int(c):
-                #     continue
                 adj = np.load(path + c + "/" + pp, allow_pickle=True)
                 g = nx.from_numpy_array(adj)                 
                 
-    #             ori_predictions.append(prediction)                
+                # ori_predictions.append(prediction)                
                 # emb = np.load(path_emb + c + "/" + str(graph_id) + ".pkl", allow_pickle=True)
                 # gnn_embeddings.append(emb)
                 
@@ -250,21 +216,9 @@ def read_bamultishapes(explainer="PGExplainer", dataset="BA_multipleShapes_with_
 
 
 
-pattern_no2 = nx.Graph()
-pattern_no2.add_nodes_from([
-    (0, {"atom_type": 1}),
-    (1, {"atom_type": 4}),
-    (2, {"atom_type": 1})
-])
-pattern_no2.add_edges_from([(0,1), (1,2)])
-
-pattern_nh2 = nx.Graph()
-pattern_nh2.add_nodes_from([
-    (0, {"atom_type": 3}),
-    (1, {"atom_type": 4}),
-    (2, {"atom_type": 3})
-])
-pattern_nh2.add_edges_from([(0,1), (1,2)])
+##
+# read local explanations and cut them based on a certain policy
+##
 def read_mutagenicity(explainer="PGExplainer", model="GCN_TF", split="TRAIN", evaluate_method=True, min_num_include=None, manual_cut=None):
     base_path = base + f"{explainer}/Mutagenicity/{model}/"
     adjs , edge_weights , index_stopped = [] , [] , []
@@ -281,19 +235,12 @@ def read_mutagenicity(explainer="PGExplainer", model="GCN_TF", split="TRAIN", ev
             for pp in os.listdir(path + c + "/"):
                 graph_id = int(pp.split("_")[1].split(".")[0])
                 gnn_pred = int(pp.split("_")[0])
-                #if gnn_pred != int(c):
-                #    summary_predictions["wrong"].append(int(c))
-                #    continue
                 summary_predictions["correct"].append(int(c))
                 adj = np.load(path + c + "/" + pp, allow_pickle=True)
                 features = np.load(path + "features" + "/" + pp, allow_pickle=True)
                                 
                 if manual_cut is None:
                     cut = elbow_method(np.triu(adj).flatten(), index_stopped, min_num_include=2)
-                    # topk = 2  #use the method used by the original PGExplainer paper
-                    # sorted_edge_weights = np.sort(np.triu(adj).flatten())
-                    # thres_index = max(int(sorted_edge_weights.shape[0] - topk), 0)
-                    # cut = sorted_edge_weights[thres_index]
                 else:
                     cut = manual_cut
                 
@@ -305,16 +252,6 @@ def read_mutagenicity(explainer="PGExplainer", model="GCN_TF", split="TRAIN", ev
                 connected_components = list(nx.connected_components(G))
                 if len(connected_components) == adj.shape[0]: #only single nodes as connected component. No edges in the graph
                     continue
-                    added = True
-                    masked = np.ones((1,1))
-                    #masked[0, 0] = 1
-                    adjs.append(masked)
-                    belonging.append(num_iter)
-                    nodes_kept.append([0])
-                    ori_idxs.append(graph_id)
-                    precomputed_embeddings.append(np.zeros((1,14)))
-                    le_classes.append(3)
-                    edge_weights.append([])
                 else:
                     added = 0
                     for cc in connected_components:
@@ -342,11 +279,9 @@ def read_mutagenicity(explainer="PGExplainer", model="GCN_TF", split="TRAIN", ev
                             if not pattern_found:
                                 le_classes.append(2) 
                             if le_classes[-1] == 0: #temprary remove class 0 since there is just 1 example
-                                print("This is a NH2 local explanation")
                                 del le_classes[-1]
                                 continue
 
-                            #if not nx.diameter(G1) == len(G1.edges()): #if is not a line  
                             added += 1
                             adjs.append(nx.to_numpy_matrix(G1))
                             edge_weights.append(nx.get_edge_attributes(G1,"weight"))    
@@ -354,24 +289,15 @@ def read_mutagenicity(explainer="PGExplainer", model="GCN_TF", split="TRAIN", ev
                             nodes_kept.append(nodes_to_keep)
                             ori_idxs.append(graph_id)
                             precomputed_embeddings.append(to_keep)                               
-                            
-                             
-                            # atom_types_kept = set(to_keep.argmax(-1))
-                            # if 4 in atom_types_kept and 3 in atom_types_kept:
-                            #     le_classes.append(0)
-                            # elif 4 in atom_types_kept and 1 in atom_types_kept: #NO2
-                            #     le_classes.append(1)
-                            # else:
-                            #     le_classes.append(2)                            
+                                                      
                 if added:
                     g = nx.from_numpy_array(adj)
                     num_iter += 1
                     ori_adjs.append(adj)
                     ori_embeddings.append(features)
                     ori_edge_weights.append(nx.get_edge_attributes(g,"weight"))
-                    ori_classes.append(gnn_pred) #c | gnn_pred 
+                    ori_classes.append(gnn_pred)
                 else:
-                    #print(graph_id, masked.sum(), len(connected_components), adj.shape[0], )
                     pass
                 cont_num_iter += 1       
     belonging = utils.normalize_belonging(belonging)
@@ -395,9 +321,11 @@ def convert_labels_to_names(attrs):
     return ret
 
 
+##
+# read local explanations and cut them based on a certain policy
+##
 def read_hin(explainer="PGExplainer", model="GCN", split="TRAIN", min_num_include=2, manual_cut=None, priori_annotation=True):
-    base_path = base + f"{explainer}/ETN_no_split_t1t2_val_643/{model}/"
-    #base_path = base + f"{explainer}/ETN_no_split_t1t2_dipendenti_vs_pat/{model}/"
+    base_path = base + f"{explainer}/HIN/{model}/" #ETN_no_split_t1t2_val_643
     adjs , edge_weights , index_stopped = [] , [] , []
     ori_adjs, ori_edge_weights, ori_classes , belonging  = [], [], [] , [] 
     precomputed_embeddings, ori_embeddings = [], []
@@ -423,7 +351,6 @@ def read_hin(explainer="PGExplainer", model="GCN", split="TRAIN", min_num_includ
                                 
                 if manual_cut is None:
                     cut = elbow_method(np.triu(adj).flatten(), index_stopped, min_num_include=min_num_include)
-                    #cut = np.mean(adj[adj > 0].flatten())
                 else:
                     cut = manual_cut
                 
@@ -439,9 +366,6 @@ def read_hin(explainer="PGExplainer", model="GCN", split="TRAIN", min_num_includ
                 for cc in connected_components:                    
                     if len(cc) >= 2 and ego_node in cc: #to exclude single nodes
                         G1 = G.subgraph(cc)
-                        #if len(G1.nodes()) >= len(G.nodes()) - 3:
-                        #    continue
-
                         nodes_to_keep = list(G1.nodes())
                         to_keep = features[nodes_to_keep]
                         for n in nodes_to_keep:
@@ -449,18 +373,11 @@ def read_hin(explainer="PGExplainer", model="GCN", split="TRAIN", min_num_includ
 
                                         
                         # Assign tentative class to local explanation
-                        # node_attr = nx.get_node_attributes(G1,"x")
-                        # ego_node = None
-                        # for curr_node , v in node_attr.items():
-                        #     if v.item() == 4:
-                        #         ego_node = curr_node
-                        # G2 = nx.ego_graph(G1, ego_node, radius=2)
                         node_attr = nx.get_node_attributes(G1,"x")
-                        no_ego_attrs = set() #{k: 0 for k in range(4)} 
+                        no_ego_attrs = set()
                         for _ , v in node_attr.items():
                             if v.item() != 4: #exclude EGO
                                 no_ego_attrs.add(v.item())
-                                #no_ego_attrs[v.item()] += 1    #for vector counting
                         if priori_annotation:
                             # Original version
                             if no_ego_attrs == set([0]): # MED
@@ -477,114 +394,10 @@ def read_hin(explainer="PGExplainer", model="GCN", split="TRAIN", min_num_includ
                                 le_classes.append(5)
                             elif no_ego_attrs == set([0, 1]): # MED + PAT
                                 le_classes.append(6)
-                            # elif no_ego_attrs == set([0, 1, 3]): # MED + PAT + NUR
-                            #     le_classes.append(6)
-                            # elif no_ego_attrs == set([0, 3]): # MED  + NUR
-                            #     le_classes.append(7)
                             else:
                                 others[str(no_ego_attrs)] += 1
                                 le_classes.append(7)
-
-                             # Original version for Saliency
-                            # if no_ego_attrs == set([0]): # MED
-                            #     le_classes.append(0) 
-                            # elif no_ego_attrs == set([3]): # NUR
-                            #     le_classes.append(1)
-                            # elif no_ego_attrs == set([0, 1, 3]): # MPN
-                            #     le_classes.append(2)
-                            # elif no_ego_attrs == set([1]): # PAT
-                            #     le_classes.append(3)
-                            # elif no_ego_attrs == set([1, 3]): # NUR + PAT
-                            #     le_classes.append(4)
-                            # elif no_ego_attrs == set([0, 1]): # MED + PAT
-                            #     le_classes.append(5)
-                            # elif no_ego_attrs == set([0, 3]): # MED + NUR
-                            #     le_classes.append(6)
-                            # elif no_ego_attrs == set([0, 2, 3]): # MED + ADM + NUR
-                            #     le_classes.append(7)
-                            # else:
-                            #     others[str(no_ego_attrs)] += 1
-                            #     le_classes.append(8)
-
-                            # Based on vector counting
-                            # if str([int(e/4) for e in no_ego_attrs.values()]) in priori_etn_classes_names:
-                            #     z = priori_etn_classes_names.index(str([int(e/4) for e in no_ego_attrs.values()]))
-                            # else:
-                            #     z = len(priori_etn_classes_names) - 1
-                            # le_classes.append(z)
-
-                            # Assign graph label based on BFS
-                            # mark = []
-                            # for k , v in nx.bfs_successors(G1, ego_node):
-                            #     attrs_succ = set()
-                            #     for succ in v:
-                            #         attrs_succ.add(nx.get_node_attributes(G1, "x")[succ])
-                            #     mark.extend(list(attrs_succ))
-
-                            # Assign graph label based on BFS v 2.0
-                            # lenghts = nx.single_source_shortest_path_length(G1, ego_node)
-                            # mark = []
-                            # for i in range(1, max(lenghts.values())+1):
-                            #     level_i = [nx.get_node_attributes(G1, "x")[n].item() for n , l in lenghts.items() if l == i]
-                            #     mark.extend(sorted(convert_labels_to_names(list(set(level_i)))))
-                            # mark = "".join(mark)
-                            # # if mark in all_names:
-                            # #     le_classes.append(all_names[mark])
-                            # # else:
-                            # #     all_names[mark] = len(all_names.keys())
-                            # #     le_classes.append(all_names[mark])
-                            # le_classes.append(mark)
-
-                            # Considering all possible combnatons found on the train                            
-                            # if no_ego_attrs == set([3]): # N
-                            #     le_classes.append(0)
-                            # elif no_ego_attrs == set([2]): # A
-                            #     le_classes.append(1)
-                            # elif no_ego_attrs == set([1]): # P
-                            #     le_classes.append(2)
-                            # elif no_ego_attrs == set([0]): # M
-                            #     le_classes.append(3)
-                            # elif no_ego_attrs == set([1, 3]): # NP
-                            #     le_classes.append(4)
-                            # elif no_ego_attrs == set([2, 3]): # NA
-                            #     le_classes.append(5)
-                            # elif no_ego_attrs == set([1, 2]): # AP
-                            #     le_classes.append(6)
-                            # elif no_ego_attrs == set([0, 2]): # AM
-                            #     le_classes.append(7) 
-                            # elif no_ego_attrs == set([0, 3]): # MN
-                            #     le_classes.append(8)
-                            # elif no_ego_attrs == set([0, 1]): # MP
-                            #     le_classes.append(9)
-                            # elif no_ego_attrs == set([0, 2, 1]): # AMP
-                            #     le_classes.append(10)
-                            # elif no_ego_attrs == set([2, 3, 1]): # ANP
-                            #     le_classes.append(11)
-                            # elif no_ego_attrs == set([0, 1, 3]): # MNP
-                            #     le_classes.append(12)
-                            # elif no_ego_attrs == set([0, 2, 3]): # AMN
-                            #     le_classes.append(13)
-                            # elif no_ego_attrs == set([0, 1, 2, 3]): # AMNP
-                            #     le_classes.append(14)
-                            # else:
-                            #     le_classes.append(15)
                         else:
-                            # if no_ego_attrs == set([3]): # N
-                            #     le_classes.append(0) 
-                            # elif no_ego_attrs == set([0]): # M
-                            #     le_classes.append(1)
-                            # elif no_ego_attrs == set([2, 3]): # NA
-                            #     le_classes.append(2)
-                            # elif no_ego_attrs == set([1, 3]): # NP
-                            #     le_classes.append(3)
-                            # elif no_ego_attrs == set([0, 3]): # NM
-                            #     le_classes.append(4)
-                            # elif no_ego_attrs == set([0, 2]): # MA
-                            #     le_classes.append(5)
-                            # elif no_ego_attrs == set([0, 2, 3]): # NMA
-                            #     le_classes.append(6)
-                            # else:
-                            #     le_classes.append(7)
                             names = "".join(sorted(convert_labels_to_names(no_ego_attrs)))
                             if names in all_names:
                                 le_classes.append(all_names[names])
@@ -604,283 +417,7 @@ def read_hin(explainer="PGExplainer", model="GCN", split="TRAIN", min_num_includ
                     ori_adjs.append(adj)
                     ori_embeddings.append(features)
                     ori_edge_weights.append(nx.get_edge_attributes(g,"weight"))
-                    ori_classes.append(gnn_pred) #c | gnn_pred 
+                    ori_classes.append(gnn_pred)
                 cont_num_iter += 1       
     belonging = utils.normalize_belonging(belonging)
-    print(list(all_names.keys()))
-    print(others)
     return adjs , edge_weights , ori_adjs , ori_classes , belonging , summary_predictions , le_classes, precomputed_embeddings
-
-
-
-
-
-# def read_logic8(explainer="CAM", model="GCN", split="TRAIN", min_num_include=3, manual_cut=None, priori_annotation=True):
-#     #base_path = base + f"{explainer}/ETN_no_split_t1t2_val_643/{model}/"
-#     base_path = base + f"{explainer}/logic8/{model}/"
-#     adjs , edge_weights , index_stopped = [] , [] , []
-#     ori_adjs, ori_edge_weights, ori_classes , belonging  = [], [], [] , [] 
-#     precomputed_embeddings, ori_embeddings = [], []
-#     le_classes = []
-#     ori_idxs , nodes_kept = [] , []
-#     summary_predictions = defaultdict(list)
-
-#     cont_num_iter , num_iter = 0 , 0 
-#     for split in [split]:
-#         path = base_path + split + "/"
-#         for c in ["0", "1"]:
-#             for pp in os.listdir(path + c + "/"):
-#                 graph_id = int(pp.split("_")[1].split(".")[0])
-#                 gnn_pred = int(pp.split("_")[0])
-#                 if gnn_pred != int(c):
-#                     summary_predictions["wrong"].append(int(c))
-#                     continue
-#                 summary_predictions["correct"].append(int(c))
-#                 #adj = np.load(path + c + "/" + pp, allow_pickle=True)
-#                 #features = np.load(path + "features" + "/" + pp, allow_pickle=True)
-#                 with open(path + c + "/" + pp, 'rb') as f:
-#                     G = pickle.load(f).to_undirected()
-
-#                 features = torch.tensor(list(nx.get_node_attributes(G, "features").values()))
-#                 gt_motif = torch.tensor(list(nx.get_node_attributes(G, "y").values()))
-                
-#                 if c == "1":
-#                     nodes_expl = [x for x,y in G.nodes(data=True) if y['y'] == 1] 
-#                 else:
-#                     nodes_expl = [x for x,y in G.nodes(data=True) if y['expl'] == 1] 
-#                 G_sub = G.subgraph(nodes_expl)
-#                 # if manual_cut is None:
-#                 #     #cut = elbow_method(np.triu(adj).flatten(), index_stopped, min_num_include=min_num_include)
-#                 #     cut = np.mean(adj[adj > 0].flatten())
-#                 # else:
-#                 #     cut = manual_cut
-                
-#                 # masked = copy.deepcopy(adj)
-#                 # masked[masked < cut] = 0
-#                 # masked[masked >= cut] = 1   
-#                 # G = nx.from_numpy_matrix(masked)
-
-                
-#                 connected_components = list(nx.connected_components(G_sub))
-#                 added = 0
-#                 for cc in connected_components:                    
-#                     if len(cc) >= 2: #to exclude single nodes
-#                         G1 = G_sub.subgraph(cc)
-
-#                         nodes_to_keep = list(G1.nodes())
-#                         to_keep = features[nodes_to_keep]
-#                         for n in nodes_to_keep:
-#                             G1.nodes[n]["x"] = features[n].argmax(-1)
-                                        
-#                         node_attr = nx.get_node_attributes(G1,"x")
-#                         no_ego_attrs = set() #{k: 0 for k in range(4)} 
-#                         for _ , v in node_attr.items():
-#                             if v.item() != 4: #exclude EGO
-#                                 no_ego_attrs.add(v.item())
-#                                 #no_ego_attrs[v.item()] += 1    #for vector counting
-                        
-#                         motif_type = gt_motif[nodes_to_keep]
-#                         if sum(motif_type) >= 2: # Positive sample
-#                             le_classes.append(0)
-#                         elif sum(motif_type) == 1: # Maybe noise?
-#                             le_classes.append(1)
-#                         else:
-#                             le_classes.append(2)
-                        
-#                         added += 1
-#                         adjs.append(nx.to_numpy_matrix(G1))
-#                         edge_weights.append(nx.get_edge_attributes(G1,"weight"))    
-#                         belonging.append(num_iter)
-#                         nodes_kept.append(nodes_to_keep)
-#                         ori_idxs.append(graph_id)
-#                         precomputed_embeddings.append(to_keep)
-#                 if added:
-#                     num_iter += 1
-#                     ori_adjs.append(G)
-#                     ori_embeddings.append(features)
-#                     ori_edge_weights.append(nx.get_edge_attributes(G,"weight"))
-#                     ori_classes.append(gnn_pred) #c | gnn_pred 
-#                 cont_num_iter += 1       
-#     belonging = utils.normalize_belonging(belonging)
-#     return adjs , edge_weights , ori_adjs , ori_classes , belonging , summary_predictions , le_classes, precomputed_embeddings
-
-
-
-# def read_bamultishapesMC(explainer="PGExplainer", dataset="BA_multipleShapes_MC_circle_house_with_pred_128hidden", model="GCN", split="TRAIN", evaluate_method=True, remove_mix=False, min_num_include=5, manual_cut=None):
-#     base_path = base + f"{explainer}/{dataset}/{model}/"
-#     adjs , edge_weights , index_stopped = [] , [] , []
-#     ori_adjs, ori_edge_weights, ori_classes , belonging , ori_predictions = [], [], [] , [] , []
-#     precomputed_embeddings , gnn_embeddings = [] , []
-#     total_graph_labels , total_cc_labels , le_classes = [] , [] , []
-    
-#     global summary_predictions
-#     summary_predictions = {"correct": [], "wrong": []}
-
-#     num_multi_shapes_removed , num_class_relationship_broken , cont_num_iter , num_iter = 0 , 0 , 0 , 0
-#     for split in [split]:
-#         path = base_path + split + "/"
-#         #path_emb = base_emb + split + "/"
-#         for c in ["2", "1","0"]:
-#             for pp in os.listdir(path + c + "/"):
-#                 graph_id = int(pp.split(".")[0])
-#                 # gnn_pred = int(pp.split("_")[0])
-#                 # if gnn_pred != int(c):
-#                 #     continue
-#                 adj = np.load(path + c + "/" + pp, allow_pickle=True)
-#                 g = nx.from_numpy_array(adj)                 
-                
-#     #             ori_predictions.append(prediction)                
-#                 # emb = np.load(path_emb + c + "/" + str(graph_id) + ".pkl", allow_pickle=True)
-#                 # gnn_embeddings.append(emb)
-                
-#                 # bias=0.15 per circle_triangle
-#                 # bias=0.26/0.35 per circle_house
-#                 cut = elbow_method(np.triu(adj).flatten(), index_stopped, min_num_include, bias=0.35) if manual_cut is None else manual_cut
-#                 masked = copy.deepcopy(adj)
-#                 masked[masked <= cut] = 0
-#                 masked[masked > cut] = 1   
-#                 G = nx.from_numpy_matrix(masked)
-
-#                 added = 0
-#                 graph_labels = label_explanation_mc(g, house, grid, wheel, triangle, classic.cycle_graph(5), int(c), return_raw=True)
-#                 gnn_pred = int(pp.split("_")[0])
-#                 if gnn_pred != int(c):
-#                     summary_predictions["wrong"].append(assign_class_mc(graph_labels))
-#                     continue
-#                 summary_predictions["correct"].append(assign_class_mc(graph_labels))
-#                 total_cc_labels.append([])
-#                 cc_labels = []
-#                 for cc in nx.connected_components(G):
-#                     if len(cc) > 2:
-#                         G1 = G.subgraph(cc)
-#                         if not nx.diameter(G1) == len(G1.edges()): #if is not a line  
-#                             cc_lbl = label_explanation_mc(G1, house, grid, wheel, triangle, classic.cycle_graph(5), int(c), return_raw=True)
-#                             if remove_mix and assign_class_mc(cc_lbl) >= 4:
-#                                 num_multi_shapes_removed += 1
-#                                 if added:
-#                                     print("added = ", added)
-#                                     del adjs[-1], edge_weights[-1], belonging[-1], total_cc_labels[-1], le_classes[-1]
-#                                     added = 0
-#                                 break
-#                             added += 1
-#                             cc_labels.extend(cc_lbl)
-#                             total_cc_labels[-1].extend(cc_lbl) 
-#                             adjs.append(nx.to_numpy_matrix(G1))
-#                             edge_weights.append(nx.get_edge_attributes(G1,"weight"))    
-#                             belonging.append(num_iter)
-#                             le_classes.append(assign_class_mc(cc_lbl))
-                            
-#                             if gnn_embeddings != []:
-#                                 nodes_to_keep = list(G1.nodes())
-#                                 to_keep = gnn_embeddings[-1][nodes_to_keep]
-#                                 precomputed_embeddings.append(to_keep)
-#                 if total_cc_labels[-1] == []:
-#                     del total_cc_labels[-1]
-#                 if added:
-#                     if graph_labels != []: total_graph_labels.append(graph_labels)
-#                     num_iter += 1
-#                     ori_adjs.append(adj)            
-#                     ori_edge_weights.append(nx.get_edge_attributes(g,"weight"))
-#                     ori_classes.append(gnn_pred) #c | gnn_pred
-#                     for lbl in graph_labels:
-#                         if lbl not in cc_labels:
-#                             num_class_relationship_broken += 1
-#                             break    
-#                 cont_num_iter += 1       
-#     belonging = utils.normalize_belonging(belonging)
-#     if evaluate_method:
-#         evaluate_cutting(ori_adjs, adjs)
-#         print("num_class_relationship_broken: ", num_class_relationship_broken, " num_multi_shapes_removed:" , num_multi_shapes_removed)
-#     return adjs , edge_weights , ori_classes , belonging , summary_predictions, le_classes
-
-
-
-
-# def read_mutag(explainer="PGExplainer", model="GCN", split="TRAIN", evaluate_method=True, min_num_include=None, manual_cut=None):
-#     base_path = base + f"{explainer}/MUTAG/{model}/"
-#     adjs , edge_weights , index_stopped = [] , [] , []
-#     ori_adjs, ori_edge_weights, ori_classes , belonging  = [], [], [] , [] 
-#     precomputed_embeddings, ori_embeddings = [], []
-#     le_classes = []
-#     ori_idxs , nodes_kept = [] , []
-#     summary_predictions = defaultdict(list)
-
-#     cont_num_iter , num_iter = 0 , 0 
-#     for split in [split]:
-#         path = base_path + split + "/"
-#         for c in ["0", "1"]:
-#             for pp in os.listdir(path + c + "/"):
-#                 graph_id = int(pp.split("_")[1].split(".")[0])
-#                 gnn_pred = int(pp.split("_")[0])
-#                 #if gnn_pred != int(c):
-#                 #    summary_predictions["wrong"].append(int(c))
-#                 #    continue
-#                 summary_predictions["correct"].append(int(c))
-#                 adj = np.load(path + c + "/" + pp, allow_pickle=True).numpy()
-#                 features = np.load(path + "features" + "/" + pp, allow_pickle=True)
-                                
-#                 if manual_cut is None:
-#                     cut = elbow_method(np.triu(adj).flatten(), index_stopped, min_num_include=2)
-#                     # topk = 2  #use the method used by the original PGExplainer paper
-#                     # sorted_edge_weights = np.sort(np.triu(adj).flatten())
-#                     # thres_index = max(int(sorted_edge_weights.shape[0] - topk), 0)
-#                     # cut = sorted_edge_weights[thres_index]
-#                 else:
-#                     cut = manual_cut
-                
-#                 masked = copy.deepcopy(adj)
-#                 masked[masked < cut] = 0
-#                 masked[masked >= cut] = 1   
-#                 G = nx.from_numpy_matrix(masked)
-
-#                 connected_components = list(nx.connected_components(G))
-#                 if len(connected_components) == adj.shape[0]: #only single nodes as connected component. No edges in the graph
-#                     continue
-#                 else:
-#                     added = 0
-#                     for cc in connected_components:
-#                         if len(cc) >= 2: #to exclude single nodes
-#                             G1 = G.subgraph(cc)
-#                             if len(G1.nodes()) >= len(G.nodes()) - 3:
-#                                 continue
-
-#                             nodes_to_keep = list(G1.nodes())
-#                             #to_keep = embedding[nodes_to_keep]
-#                             to_keep = features[nodes_to_keep]
-#                             for n in nodes_to_keep:
-#                                 G1.nodes[n]["atom_type"] = features[n].argmax(-1)
-
-#                             pattern_found = False
-#                             for i , pattern in enumerate([classic.cycle_graph(6)]):
-#                                 if pattern_found:
-#                                     continue
-#                                 GM = isomorphism.GraphMatcher(G1, pattern)
-#                                 if GM.subgraph_is_isomorphic():
-#                                     pattern_found = True
-#                                     match = list(GM.subgraph_isomorphisms_iter())
-                                   
-#                                     le_classes.append(int(len(match) / 12))
-#                             if not pattern_found:
-#                                 le_classes.append(0) 
-                            
- 
-#                             added += 1
-#                             adjs.append(nx.to_numpy_matrix(G1))
-#                             edge_weights.append(nx.get_edge_attributes(G1,"weight"))    
-#                             belonging.append(num_iter)
-#                             nodes_kept.append(nodes_to_keep)
-#                             ori_idxs.append(graph_id)
-#                             precomputed_embeddings.append(to_keep)                            
-#                 if added:
-#                     g = nx.from_numpy_array(adj)
-#                     num_iter += 1
-#                     ori_adjs.append(adj)
-#                     ori_embeddings.append(features)
-#                     ori_edge_weights.append(nx.get_edge_attributes(g,"weight"))
-#                     ori_classes.append(c) #c | gnn_pred 
-#                 else:
-#                     pass
-#                 cont_num_iter += 1       
-#     belonging = utils.normalize_belonging(belonging)
-#     #le_classes = [l-1 for l in le_classes]
-#     return adjs , edge_weights , ori_adjs , ori_classes , belonging , summary_predictions , le_classes, precomputed_embeddings

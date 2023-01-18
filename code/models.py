@@ -19,6 +19,9 @@ import utils
 
 
 class GLGExplainer(torch.nn.Module):
+    """
+        Implementation of GLGExplainer (https://arxiv.org/abs/2210.07147)
+    """
     def __init__(self, len_model, le_model, dataloader, val_dataloader, device, hyper_params, classes_names, dataset_name):
         super().__init__()        
         
@@ -40,6 +43,7 @@ class GLGExplainer(torch.nn.Module):
         self.temp = hyper_params["ts"]
         self.assign_func = hyper_params["assign_func"]
         self.early_stopping = utils.EarlyStopping(min_delta=0, patience=100)
+        self.losses_names = ["loss", "prototype_distance_loss", "r1_loss", "r2_loss", "concept_entropy_loss", "distribution_entropy_loss", "div_loss", "len_loss", "debug_loss", "logic_loss"]
         
         self.optimizer = torch.optim.Adam(le_model.parameters(), lr=self.hyper["le_emb_lr"])
         self.optimizer.add_param_group({'params': len_model.parameters(), 'lr': self.hyper["len_lr"]})
@@ -75,36 +79,24 @@ class GLGExplainer(torch.nn.Module):
         y = torch.nn.functional.one_hot(y.long()).float().to(self.device)
              
         le_assignments = utils.prototype_assignement(self.hyper["assign_func"], le_embeddings, self.prototype_vectors, temp=1)        
-        concept_vector = scatter(le_assignments, new_belonging, dim=0, reduce="max")  #"sum"
-        #concept_vector = torch.clip(concept_vector, min=0, max=1)
+        concept_vector = scatter(le_assignments, new_belonging, dim=0, reduce="max")
         if return_raw:
             return concept_vector , le_embeddings ,  le_assignments , y , le_classes.cpu() , le_idxs , new_belonging
         else:
             return concept_vector , le_embeddings
 
     
-    def train_epoch(self, loader, epoch, train=True):   
+    def train_epoch(self, loader, train=True):   
         if train:
-            self.le_model.train()
-            self.len_model.train()
+            self.train()
         else:
-            self.le_model.eval()
-            self.len_model.eval()
-
-        total_loss                     = torch.tensor(0., device=self.device)
-        total_prototype_distance_loss  = torch.tensor(0., device=self.device)
-        total_r1_loss                  = torch.tensor(0., device=self.device)
-        total_r2_loss                  = torch.tensor(0., device=self.device)
-        total_concept_entropy_loss     = torch.tensor(0., device=self.device)
-        total_distribution_entropy_loss= torch.tensor(0., device=self.device)
-        total_div_loss                 = torch.tensor(0., device=self.device)
-        total_len_loss                 = torch.tensor(0., device=self.device)
-        total_debug_loss               = torch.tensor(0., device=self.device)
-        total_logic_loss               = torch.tensor(0., device=self.device)
-        
+            self.eval()
+    
+        total_losses = {k: torch.tensor(0., device=self.device) for k in self.losses_names}        
         preds , trues = torch.tensor([], device=self.device) , torch.tensor([], device=self.device)
         le_classes = torch.tensor([], device=self.device)
         total_prototype_assignements = torch.tensor([], device=self.device)
+
         for data in loader:
             self.optimizer.zero_grad() 
             data = data.to(self.device)
@@ -112,104 +104,19 @@ class GLGExplainer(torch.nn.Module):
             
             new_belonging = torch.tensor(utils.normalize_belonging(data.graph_id), dtype=torch.long, device=self.device)
             y = scatter(data.task_y, new_belonging, dim=0, reduce="max")
-            #y2 = scatter(data.task_y, new_belonging, dim=0, reduce="min")
-            #assert torch.all(y == y2) #sanity check
             y_train_1h = torch.nn.functional.one_hot(y.long(), num_classes=self.num_classes).float().to(self.device)
             
             prototype_assignements = utils.prototype_assignement(self.hyper["assign_func"], le_embeddings, self.prototype_vectors, temp=1)
             total_prototype_assignements = torch.cat([total_prototype_assignements, prototype_assignements], dim=0)
             le_classes = torch.concat([le_classes, data.y], dim=0)
-            concept_vector = scatter(prototype_assignements, new_belonging, dim=0, reduce="max")  #"sum"
-            #concept_vector = torch.clip(concept_vector, min=0, max=1)
+            concept_vector = scatter(prototype_assignements, new_belonging, dim=0, reduce="max")
             
-            if self.hyper["debug_prototypes"]:
-                # debug of Prototypes: do classification on prototypes
-                loss , r1_loss , r2_loss , debug_loss = self.debug_prototypes(le_embeddings, prototype_assignements, data.y)
-                total_loss += loss.detach()
-                total_r1_loss += r1_loss.detach()
-                total_r2_loss += r2_loss.detach()
-                total_debug_loss += debug_loss.detach()
-                preds = torch.cat([preds, prototype_assignements], dim=0)
-                trues = torch.cat([trues, data.y], dim=0)
-                continue
-                
-            # LEN
-            y_pred = self.len_model(concept_vector).squeeze(-1)
+            loss , y_pred = self.compute_losses(le_embeddings, prototype_assignements, total_losses, concept_vector, y_train_1h, data.y)
             preds = torch.cat([preds, y_pred], dim=0)
             trues = torch.cat([trues, y_train_1h], dim=0)
-            len_loss = 0.5 * self.loss_len(y_pred, y_train_1h, self.hyper["focal_gamma"], self.hyper["focal_alpha"])
             
-            # Logic loss defined by Entropy Layer
-            if self.hyper["coeff_logic_loss"] > 0:
-                self.hyper["coeff_logic_loss"] * te.nn.functional.entropy_logic_loss(self.len_model)
-            else:
-                logic_loss = torch.tensor(0., device=self.device)
-            
-            
-            # Prototype distance: push away the different prototypes by maximizing the distance to the nearest prototype
-            if self.hyper["coeff_pdist"] > 0:
-                prototype_distances = torch.clip(utils.pairwise_dist(self.prototype_vectors), max=0.5).fill_diagonal_(float("inf"))
-                prototype_distances = prototype_distances.min(-1).values
-                prototype_distance_loss = self.hyper["coeff_pdist"] * - torch.mean(prototype_distances)
-            else:
-                prototype_distance_loss = torch.tensor(0., device=self.device)
-                
-            # Div loss: from ProtGNN minimize the cosine similarity between prototypes with some margin
-            if self.hyper["coeff_divloss"] > 0:
-                proto_norm = F.normalize(self.prototype_vectors, p=2, dim=1)
-                cos_distances = torch.mm(proto_norm, torch.t(proto_norm)) - torch.eye(proto_norm.shape[0]).to(self.device) - 0.2
-                matrix2 = torch.zeros(cos_distances.shape).to(self.device)
-                div_loss = self.hyper["coeff_divloss"] * torch.sum(torch.where(cos_distances > 0, cos_distances, matrix2))   
-#                 scal_dot_product = torch.mm(self.prototype_vectors, torch.t(self.prototype_vectors)).fill_diagonal_(0.) / (self.prototype_vectors.shape[1]**0.5)
-#                 matrix2 = torch.zeros(scal_dot_product.shape).to(self.device)
-#                 div_loss = self.hyper["coeff_divloss"] * torch.sum(torch.where(scal_dot_product > 0, scal_dot_product, matrix2))   
-            else:
-                div_loss = torch.tensor(0., device=self.device)
-
-            # R1 loss: push each prototype to be close to at least one example
-            if self.hyper["coeff_r1"] > 0:
-                sample_prototype_distance = torch.cdist(le_embeddings, self.prototype_vectors, p=2)**2 # num_sample x num_prototypes
-                min_prototype_sample_distance = sample_prototype_distance.T.min(-1).values
-                avg_prototype_sample_distance = torch.mean(min_prototype_sample_distance)
-                r1_loss = self.hyper["coeff_r1"] * avg_prototype_sample_distance
-            else:
-                r1_loss = torch.tensor(0., device=self.device)
-
-            # R2 loss: Push every example to be close to a sample
-            if self.hyper["coeff_r2"] > 0:
-                sample_prototype_distance = torch.cdist(le_embeddings, self.prototype_vectors, p=2)**2
-                min_sample_prototype_distance = sample_prototype_distance.min(-1).values
-                avg_sample_prototype_distance = torch.mean(min_sample_prototype_distance)
-                r2_loss = self.hyper["coeff_r2"] * avg_sample_prototype_distance
-            else:
-                r2_loss = torch.tensor(0., device=self.device)
-
-            # Entropy losses
-            if self.hyper["coeff_ce"] > 0:
-                concept_entropy_loss = self.hyper["coeff_ce"] * utils.entropy_loss(prototype_assignements)
-            else:
-                concept_entropy_loss = torch.tensor(0., device=self.device)
-                
-            if self.hyper["coeff_de"] > 0:
-                distribution_entropy_loss = self.hyper["coeff_de"] * utils.entropy_loss(
-                    torch.nn.functional.normalize(
-                        torch.sum(prototype_assignements, dim=0),
-                        p=2.0, dim=0).unsqueeze(0)
-                )       
-            else:
-                distribution_entropy_loss = torch.tensor(0., device=self.device)
-
-
-            loss = len_loss + logic_loss   + prototype_distance_loss + r1_loss + r2_loss + concept_entropy_loss + div_loss + distribution_entropy_loss
-            total_loss                     += loss.detach()
-            total_len_loss                 += len_loss.detach()
-            total_prototype_distance_loss  += prototype_distance_loss.detach()
-            total_r1_loss                  += r1_loss.detach()
-            total_r2_loss                  += r2_loss.detach()
-            total_concept_entropy_loss     += concept_entropy_loss.detach()
-            total_div_loss                 += div_loss.detach()
-            total_logic_loss               += logic_loss.detach()
-            total_distribution_entropy_loss+= distribution_entropy_loss.detach()
+            if loss is None:
+                continue
             
             if train:
                 loss.backward()
@@ -220,30 +127,21 @@ class GLGExplainer(torch.nn.Module):
             acc_overall = 0
         else:
             acc_per_class = accuracy_score(trues.argmax(-1).cpu(), preds.argmax(-1).cpu())
-            acc_overall = sum(trues[:, :].eq(preds[:, :] > 0).sum(1) == self.num_classes) / len(preds)
+            acc_overall   = sum(trues[:, :].eq(preds[:, :] > 0).sum(1) == self.num_classes) / len(preds)
         
         cluster_acc = utils.get_cluster_accuracy(
             total_prototype_assignements.argmax(1).detach().cpu().numpy(), 
             le_classes.cpu())
-        metrics = {'loss': total_loss.item()/len(loader), 
-                    "acc_per_class": acc_per_class, 
-                    "acc_overall": acc_overall, 
-                    "len_loss": total_len_loss.item()/len(loader),
-                    "logic_loss": total_logic_loss.item()/len(loader),                    
-                    "prototype_distance_loss": total_prototype_distance_loss.item()/len(loader),
-                    "r1_loss:": total_r1_loss.item()/len(loader),
-                    "r2_loss:": total_r2_loss.item()/len(loader),
-                    "div_loss:": total_div_loss.item()/len(loader),
-                    "debug_loss:": total_debug_loss.item()/len(loader),
-                    "concept_entropy_loss:": total_concept_entropy_loss.item()/len(loader),
-                    "distribution_entropy_loss:": total_distribution_entropy_loss.item()/len(loader),
-                    "temperature": self.temp,
-                    "cluster_acc_mean": np.mean(cluster_acc),
-                    "cluster_acc_std": np.std(cluster_acc),
-                    "concept_vector_entropy": utils.entropy_loss(prototype_assignements).detach().cpu(),
-                    "prototype_assignements": wandb.Histogram(prototype_assignements.detach().cpu()),
-                    "concept_vector": wandb.Histogram(concept_vector.detach().cpu()),
-                   }
+
+        metrics                           = {k: v.item() / len(loader) for k , v in total_losses.items()}
+        metrics["acc_per_class"]          = acc_per_class
+        metrics["acc_overall"]            = acc_overall
+        metrics["temperature"]            = self.temp
+        metrics["cluster_acc_mean"]       = np.mean(cluster_acc)
+        metrics["cluster_acc_std"]        = np.std(cluster_acc)
+        metrics["concept_vector_entropy"] = utils.entropy_loss(prototype_assignements).detach().cpu()
+        metrics["prototype_assignements"] = wandb.Histogram(prototype_assignements.detach().cpu())
+        metrics["concept_vector"]         = wandb.Histogram(concept_vector.detach().cpu())                   
             
         if self.hyper["log_wandb"]:
             k = "train" if train else "val"
@@ -274,7 +172,7 @@ class GLGExplainer(torch.nn.Module):
         return loss, r1_loss , r2_loss , debug_loss
         
         
-    def iterate(self, num_epochs, name_wandb="", config_wandb=None, save_metrics=True, plot=False):
+    def iterate(self, name_wandb="", config_wandb=None, save_metrics=True, plot=False):
         if self.hyper["log_wandb"]:
             self.run = wandb.init(
                     project=config_wandb["project_name"],
@@ -287,18 +185,20 @@ class GLGExplainer(torch.nn.Module):
             wandb.watch(self.le_model)
             wandb.watch(self.len_model)        
         
-        self.inspect_embedding(self.dataloader)        
+        if plot: 
+            self.inspect(self.dataloader)        
+
         start_time = time.time()
         best_val_loss = np.inf
-        for epoch in range(1, num_epochs):
-            train_metrics = self.train_epoch(self.dataloader, epoch)
-            val_metrics   = self.train_epoch(self.val_dataloader, epoch, train=False)
+        for epoch in range(1, self.hyper["num_epochs"]):
+            train_metrics = self.train_epoch(self.dataloader)
+            val_metrics   = self.train_epoch(self.val_dataloader, train=False)
             
             if epoch % 20 == 0:
-                self.inspect_embedding(self.dataloader, self.hyper["log_wandb"], plot=plot)
-                self.inspect_embedding(self.val_dataloader, log_wandb=False, plot=False, is_train_set=False)
+                self.inspect(self.dataloader, self.hyper["log_wandb"], plot=plot)
+                self.inspect(self.val_dataloader, log_wandb=False, plot=False, is_train_set=False)
                 
-            self.temp -= (self.hyper["ts"] - self.hyper["te"]) / num_epochs
+            self.temp -= (self.hyper["ts"] - self.hyper["te"]) / self.hyper["num_epochs"]
             if self.hyper["log_wandb"] and self.hyper["log_models"]:
                 torch.save(self.state_dict(), f"{wandb.run.dir}/epoch_{epoch}.pt")  
             if val_metrics["loss"] < best_val_loss and self.hyper["log_models"]:
@@ -337,7 +237,7 @@ class GLGExplainer(torch.nn.Module):
         return
 
     
-    def inspect_embedding(self, loader, log_wandb=False, plot=True, is_train_set=False):
+    def inspect(self, loader, log_wandb=False, plot=True, is_train_set=False):
         self.eval()
         
         with torch.no_grad():
@@ -434,6 +334,95 @@ class GLGExplainer(torch.nn.Module):
                 else:
                     self.val_logic_metrics.append({'logic_acc': hmean([accuracy1, accuracy2]), "logic_acc_clf": accuracy, "concept_purity": np.mean(accs), "concept_purity_std": np.std(accs)})
         self.len_model.to(self.device)
+
+
+    def compute_losses(self, le_embeddings, prototype_assignements, total_losses, concept_vector, y_train_1h, le_y):
+        # debug of prototypes: do direct classification on prototypes
+        if self.hyper["debug_prototypes"]:                
+            loss , r1_loss , r2_loss , debug_loss = self.debug_prototypes(le_embeddings, prototype_assignements, le_y)
+            total_losses["loss"] += loss.detach()
+            total_losses["r1_loss"] += r1_loss.detach()
+            total_losses["r2_loss"] += r2_loss.detach()
+            total_losses["debug_loss"] += debug_loss.detach()            
+            #preds = torch.cat([preds, prototype_assignements], dim=0)
+            #trues = torch.cat([trues, le_y], dim=0)
+            return None , prototype_assignements
+            
+        # LEN clf. loss
+        y_pred = self.len_model(concept_vector).squeeze(-1)
+        #preds = torch.cat([preds, y_pred], dim=0)
+        #trues = torch.cat([trues, y_train_1h], dim=0)
+        len_loss = 0.5 * self.loss_len(y_pred, y_train_1h, self.hyper["focal_gamma"], self.hyper["focal_alpha"])
+        total_losses["len_loss"] += len_loss.detach()   
+
+
+        # R1 loss: push each prototype to be close to at least one example
+        if self.hyper["coeff_r1"] > 0:
+            sample_prototype_distance = torch.cdist(le_embeddings, self.prototype_vectors, p=2)**2 # num_sample x num_prototypes
+            min_prototype_sample_distance = sample_prototype_distance.T.min(-1).values
+            avg_prototype_sample_distance = torch.mean(min_prototype_sample_distance)
+            r1_loss = self.hyper["coeff_r1"] * avg_prototype_sample_distance
+            total_losses["r1_loss"] += r1_loss.detach()
+        else:
+            r1_loss = torch.tensor(0., device=self.device)
+
+        # R2 loss: Push every example to be close to a sample
+        if self.hyper["coeff_r2"] > 0:
+            sample_prototype_distance = torch.cdist(le_embeddings, self.prototype_vectors, p=2)**2
+            min_sample_prototype_distance = sample_prototype_distance.min(-1).values
+            avg_sample_prototype_distance = torch.mean(min_sample_prototype_distance)
+            r2_loss = self.hyper["coeff_r2"] * avg_sample_prototype_distance
+            total_losses["r2_loss"] += r2_loss.detach()
+        else:
+            r2_loss = torch.tensor(0., device=self.device)         
+        
+        # Logic loss defined by Entropy Layer
+        if self.hyper["coeff_logic_loss"] > 0:
+            logic_loss = self.hyper["coeff_logic_loss"] * te.nn.functional.entropy_logic_loss(self.len_model)
+            total_losses["logic_loss"] += logic_loss.detach()
+        else:
+            logic_loss = torch.tensor(0., device=self.device)            
+        
+        # Prototype distance: push away the different prototypes by maximizing the distance to the nearest prototype
+        if self.hyper["coeff_pdist"] > 0:
+            prototype_distances = torch.clip(utils.pairwise_dist(self.prototype_vectors), max=0.5).fill_diagonal_(float("inf"))
+            prototype_distances = prototype_distances.min(-1).values
+            prototype_distance_loss = self.hyper["coeff_pdist"] * - torch.mean(prototype_distances)
+            total_losses["prototype_distance_loss"] += prototype_distance_loss.detach()
+        else:
+            prototype_distance_loss = torch.tensor(0., device=self.device)
+            
+        # Div loss: from ProtGNN minimize the cosine similarity between prototypes with some margin
+        if self.hyper["coeff_divloss"] > 0:
+            proto_norm = F.normalize(self.prototype_vectors, p=2, dim=1)
+            cos_distances = torch.mm(proto_norm, torch.t(proto_norm)) - torch.eye(proto_norm.shape[0]).to(self.device) - 0.2
+            matrix2 = torch.zeros(cos_distances.shape).to(self.device)
+            div_loss = self.hyper["coeff_divloss"] * torch.sum(torch.where(cos_distances > 0, cos_distances, matrix2))   
+            total_losses["div_loss"] += div_loss.detach()
+        else:
+            div_loss = torch.tensor(0., device=self.device)
+
+        # 2 Entropy losses
+        if self.hyper["coeff_ce"] > 0:
+            concept_entropy_loss = self.hyper["coeff_ce"] * utils.entropy_loss(prototype_assignements)
+            total_losses["concept_entropy_loss"] += concept_entropy_loss.detach()
+        else:
+            concept_entropy_loss = torch.tensor(0., device=self.device)
+            
+        if self.hyper["coeff_de"] > 0:
+            distribution_entropy_loss = self.hyper["coeff_de"] * utils.entropy_loss(
+                torch.nn.functional.normalize(
+                    torch.sum(prototype_assignements, dim=0),
+                    p=2.0, dim=0).unsqueeze(0)
+            ) 
+            total_losses["distribution_entropy_loss"] += distribution_entropy_loss.detach()      
+        else:
+            distribution_entropy_loss = torch.tensor(0., device=self.device)
+
+
+        loss = len_loss + logic_loss   + prototype_distance_loss + r1_loss + r2_loss + concept_entropy_loss + div_loss + distribution_entropy_loss
+        total_losses["loss"] += loss.detach()
+        return loss , y_pred
         
     def log(self, msg):
         wandb.log(msg)
@@ -442,8 +431,15 @@ class GLGExplainer(torch.nn.Module):
         self.le_model.eval()
         self.len_model.eval()
 
+    def train(self):
+        self.le_model.train()
+        self.len_model.train()
+
 
 class LEEmbedder(torch.nn.Module):
+    """
+        Network for computing the embedding of single disconnected local explanations
+    """
     def __init__(self, num_features, activation, num_gnn_hidden=20, dropout=0.1, num_hidden=10, num_layers=2, backbone="GIN"):
         super().__init__()
 

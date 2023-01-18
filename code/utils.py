@@ -9,7 +9,10 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 class LocalExplanationsDataset(InMemoryDataset):
-    def __init__(self, root, adjs, edge_weights, feature_type, belonging, y=None, task_y=None, precomputed_embeddings=None, transform=None, pre_transform=None, pre_filter=None):
+    """
+        PyG Dataset object containing all disconnected local explanations
+    """
+    def __init__(self, root, adjs, feature_type, belonging, y=None, task_y=None, precomputed_embeddings=None, transform=None, pre_transform=None, pre_filter=None):
         super().__init__(root, transform, pre_transform, pre_filter)
         data_list = []
         for i , adj in enumerate(adjs):
@@ -37,7 +40,6 @@ class LocalExplanationsDataset(InMemoryDataset):
                 clu = np.mean(list(nx.clustering(G).values()))
                 bet = np.mean(list(nx.betweenness_centrality(G).values()))
                 clo = np.mean(list(nx.closeness_centrality(G).values()))
-                #diam = nx.diameter(g)
                 emb = [d,clu,bet,clo]
                 for n in G.nodes():
                     features[n, 0] = G.degree[n]
@@ -67,6 +69,9 @@ class LocalExplanationsDataset(InMemoryDataset):
 
 
 class GroupBatchSampler():
+    """
+        A custom Torch sampler in order to sample in the same batch all disconnected local explanations belonging to the same input sample
+    """
     def __init__(self, num_input_graphs, drop_last, belonging):
         self.batch_size = num_input_graphs
         self.drop_last = drop_last
