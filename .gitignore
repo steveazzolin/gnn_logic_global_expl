@@ -1,9 +1,9 @@
 config/wandb_params.json
-local_explanations/BA_multipleShapes_MC_circle_house_with_pred_128hidden/
-local_explanations/BA_multipleShapes_MC_circle_triangle_with_pred/
-local_explanations/BA_multipleShapes_MC_circle_triangle_with_pred_128hidden/
-local_explanations/MUTAG/
-local_explanations/BA_multipleShapes_maxAcc_with_pred/
+local_explanations/PGExplainer/BA_multipleShapes_MC_circle_house_with_pred_128hidden/
+local_explanations/PGExplainer/BA_multipleShapes_MC_circle_triangle_with_pred/
+local_explanations/PGExplainer/BA_multipleShapes_MC_circle_triangle_with_pred_128hidden/
+local_explanations/PGExplainer/MUTAG/
+local_explanations/PGExplainer/BA_multipleShapes_maxAcc_with_pred/
 code/imgs/*
 logs/*
 trained_models/BAMultiShapes_maxaccuracy.pt
@@ -11,3 +11,5 @@ trained_models/BAMultiShapesMC.pt
 trained_models/BAMultiShapes.pt
 trained_models/HIN.pt
 trained_models/Mutagenicity.pt
+code/.ipynb_checkpoints/*
+datasets/logic*
