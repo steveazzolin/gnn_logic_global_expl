@@ -22,7 +22,7 @@ class GLGExplainer(torch.nn.Module):
     """
         Implementation of GLGExplainer (https://arxiv.org/abs/2210.07147)
     """
-    def __init__(self, len_model, le_model, dataloader, val_dataloader, device, hyper_params, classes_names, dataset_name):
+    def __init__(self, len_model, le_model, device, hyper_params, classes_names, dataset_name, num_classes):
         super().__init__()        
         
         self.le_model = le_model
@@ -35,10 +35,8 @@ class GLGExplainer(torch.nn.Module):
         self.train_metrics , self.val_metrics , self.train_logic_metrics , self.val_logic_metrics = [] , [] , [] , []
         self.device = device
         self.hyper = hyper_params
-        self.dataloader = dataloader
-        self.val_dataloader = val_dataloader
         self.classes_names = classes_names
-        self.num_classes = len(dataloader.dataset.data.task_y.unique())
+        self.num_classes = num_classes
         self.dataset_name = dataset_name
         self.temp = hyper_params["ts"]
         self.assign_func = hyper_params["assign_func"]
@@ -123,11 +121,11 @@ class GLGExplainer(torch.nn.Module):
                 self.optimizer.step()      
         
         if self.hyper["debug_prototypes"]:
-            acc_per_class = accuracy_score(trues.cpu(), preds.argmax(-1).cpu())
-            acc_overall = 0
+            acc_per_class = 0
+            acc_overall = accuracy_score(trues.cpu(), preds.argmax(-1).cpu())
         else:
-            acc_per_class = accuracy_score(trues.argmax(-1).cpu(), preds.argmax(-1).cpu())
-            acc_overall   = sum(trues[:, :].eq(preds[:, :] > 0).sum(1) == self.num_classes) / len(preds)
+            acc_per_class = accuracy_score(trues.argmax(-1).cpu(), preds.argmax(-1).cpu()) 
+            acc_overall   = sum(trues[:, :].eq(preds[:, :] > 0).sum(1) == self.num_classes) / len(preds) # it checks that the LEN predicted only one class. acc_per_class instead consider a sample correct even if the LEN fires both classes
         
         cluster_acc = utils.get_cluster_accuracy(
             total_prototype_assignements.argmax(1).detach().cpu().numpy(), 
@@ -139,9 +137,9 @@ class GLGExplainer(torch.nn.Module):
         metrics["temperature"]            = self.temp
         metrics["cluster_acc_mean"]       = np.mean(cluster_acc)
         metrics["cluster_acc_std"]        = np.std(cluster_acc)
-        metrics["concept_vector_entropy"] = utils.entropy_loss(prototype_assignements).detach().cpu()
+        metrics["concept_vector_entropy"] = utils.entropy_loss(prototype_assignements).detach().cpu() # change to total_prototype_assignements for the full information (more expensive)
         metrics["prototype_assignements"] = wandb.Histogram(prototype_assignements.detach().cpu())
-        metrics["concept_vector"]         = wandb.Histogram(concept_vector.detach().cpu())                   
+        metrics["concept_vector"]         = wandb.Histogram(concept_vector.detach().cpu())         
             
         if self.hyper["log_wandb"]:
             k = "train" if train else "val"
@@ -172,7 +170,7 @@ class GLGExplainer(torch.nn.Module):
         return loss, r1_loss , r2_loss , debug_loss
         
         
-    def iterate(self, name_wandb="", config_wandb=None, save_metrics=True, plot=False):
+    def iterate(self, train_loader, val_loader, name_wandb="", config_wandb=None, save_metrics=True, plot=False):
         if self.hyper["log_wandb"]:
             self.run = wandb.init(
                     project=config_wandb["project_name"],
@@ -186,17 +184,17 @@ class GLGExplainer(torch.nn.Module):
             wandb.watch(self.len_model)        
         
         if plot: 
-            self.inspect(self.dataloader)        
+            self.inspect(train_loader)        
 
         start_time = time.time()
         best_val_loss = np.inf
         for epoch in range(1, self.hyper["num_epochs"]):
-            train_metrics = self.train_epoch(self.dataloader)
-            val_metrics   = self.train_epoch(self.val_dataloader, train=False)
+            train_metrics = self.train_epoch(train_loader)
+            val_metrics   = self.train_epoch(val_loader, train=False)
             
             if epoch % 20 == 0:
-                self.inspect(self.dataloader, self.hyper["log_wandb"], plot=plot)
-                self.inspect(self.val_dataloader, log_wandb=False, plot=False, is_train_set=False)
+                self.inspect(train_loader, self.hyper["log_wandb"], plot=plot)
+                self.inspect(val_loader, log_wandb=False, plot=False, is_train_set=False)
                 
             self.temp -= (self.hyper["ts"] - self.hyper["te"]) / self.hyper["num_epochs"]
             if self.hyper["log_wandb"] and self.hyper["log_models"]:
@@ -205,14 +203,12 @@ class GLGExplainer(torch.nn.Module):
                 best_val_loss = val_metrics["loss"]
                 torch.save(self.state_dict(), f"../trained_models/best_so_far_{self.dataset_name}_epoch_{epoch}.pt")
 
-            print(f'{epoch:3d}: Loss: {train_metrics["loss"]:.5f}, LEN: {train_metrics["len_loss"]:2f}, AccxC: {train_metrics["acc_per_class"]:.2f}, AccO: {train_metrics["acc_overall"]:.2f}, V. Acc: {val_metrics["acc_overall"]:.2f}, V. Loss: {val_metrics["loss"]:.5f}, V. LEN {val_metrics["len_loss"]:.2f}')
+            print(f'{epoch:3d}: Loss: {train_metrics["loss"]:.5f}, LEN: {train_metrics["len_loss"]:2f}, Acc: {train_metrics["acc_overall"]:.2f}, V. Acc: {val_metrics["acc_overall"]:.2f}, V. Loss: {val_metrics["loss"]:.5f}, V. LEN {val_metrics["len_loss"]:.3f}')
                 
             if self.early_stopping.on_epoch_end(epoch, val_metrics["loss"]):
                 print(f"Early Stopping")
                 print(f"Loading model at epoch {self.early_stopping.best_epoch}")
-                if self.hyper["log_wandb"] and self.hyper["log_models"]:
-                    self.load_state_dict(torch.load(f"{wandb.run.dir}/epoch_{self.early_stopping.best_epoch}.pt"))
-                elif self.hyper["log_models"]:
+                if self.hyper["log_models"]:
                     self.load_state_dict(torch.load(f"../trained_models/best_so_far_{self.dataset_name}_epoch_{self.early_stopping.best_epoch}.pt"))
                 else:
                     print("Model not loaded")
@@ -242,7 +238,7 @@ class GLGExplainer(torch.nn.Module):
         
         with torch.no_grad():
             x_train , emb , concepts_assignement , y_train_1h , le_classes , le_idxs , belonging = self.get_concept_vector(loader, return_raw=True)        
-            y_pred = self.len_model(x_train).squeeze(-1)
+            y_pred = self.len_model(x_train).squeeze(-1).cpu()
 
             emb = emb.detach().cpu().numpy()
             concept_predictions = concepts_assignement.argmax(1).cpu().numpy()
@@ -295,44 +291,49 @@ class GLGExplainer(torch.nn.Module):
                 print("Alpha norms:")
                 print(self.len_model[0].alpha_norm)
             
-            x_train = x_train.detach()
-            explanation0, explanation_raw, _ = entropy.explain_class(self.len_model.cpu(), x_train.cpu(), y_train_1h.cpu(), train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=0, max_accuracy=True, topk_explanations=3000, try_all=False)
-            accuracy1, preds = test_explanation(explanation0, x_train.cpu(), y_train_1h.cpu(), target_class=0, mask=torch.arange(x_train.shape[0]).long(), material=False)
+            self.len_model.to("cpu")
+            x_train = x_train.detach().cpu()
+            y_train_1h = y_train_1h.cpu()
+            explanation0, explanation_raw, _ = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=0, max_accuracy=True, topk_explanations=3000, try_all=False)
+            accuracy0, preds = test_explanation(explanation0, x_train, y_train_1h, target_class=0, mask=torch.arange(x_train.shape[0]).long(), material=False)
             
-            accs = utils.get_cluster_accuracy(concept_predictions, le_classes)
+            cluster_accs = utils.get_cluster_accuracy(concept_predictions, le_classes)
             if plot:
-                print(f"Concept Purity: {np.mean(accs):2f} +- {np.std(accs):2f}")
+                print(f"Concept Purity: {np.mean(cluster_accs):2f} +- {np.std(cluster_accs):2f}")
                 print("Concept distribution: ", np.unique(concept_predictions, return_counts=True))        
                 print("Logic formulas:")
                 print("For class 0:")
-                print(accuracy1, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
+                print(accuracy0, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
 
-            explanation1, explanation_raw, _ = entropy.explain_class(self.len_model.cpu(), x_train.cpu(), y_train_1h.cpu(), train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=1, max_accuracy=True, topk_explanations=3000, try_all=False)
-            accuracy2, preds = test_explanation(explanation1, x_train.cpu(), y_train_1h.cpu(), target_class=1, mask=torch.arange(x_train.shape[0]).long(), material=False)
+            explanation1, explanation_raw, _ = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=1, max_accuracy=True, topk_explanations=3000, try_all=False)
+            accuracy1, preds = test_explanation(explanation1, x_train, y_train_1h, target_class=1, mask=torch.arange(x_train.shape[0]).long(), material=False)
             
             if plot:
                 print("For class 1:")
-                print(accuracy2, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
+                print(accuracy1, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
 
             if self.num_classes == 3:
-                explanation3, explanation_raw, _ = entropy.explain_class(self.len_model.cpu(), x_train.cpu(), y_train_1h.cpu(), train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=2, max_accuracy=True, topk_explanations=3000, try_all=False)
-                accuracy3, preds = test_explanation(explanation3, x_train.cpu(), y_train_1h.cpu(), target_class=2, mask=torch.arange(x_train.shape[0]).long(), material=False)
+                explanation2, explanation_raw, _ = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=2, max_accuracy=True, topk_explanations=3000, try_all=False)
+                accuracy2, preds = test_explanation(explanation2, x_train, y_train_1h, target_class=2, mask=torch.arange(x_train.shape[0]).long(), material=False)
                 if plot:
                     print("For class 2:")
-                    print(accuracy3, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
-                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1, explanation3], x_train.cpu(), y_train_1h.cpu(), model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+                    print(accuracy2, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
+                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1, explanation2], x_train, y_train_1h, model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+                logic_acc = hmean([accuracy0, accuracy1, accuracy2])
             else:
-                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1], x_train.cpu(), y_train_1h.cpu(), model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1], x_train, y_train_1h, model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+                logic_acc = hmean([accuracy0, accuracy1])
+
             if plot: print("Accuracy as classifier: ", round(accuracy, 4))
             if plot: print("LEN fidelity: ", sum(y_train_1h[:, :].eq(y_pred[:, :] > 0).sum(1) == self.num_classes) / len(y_pred))
             
             print()
-            if log_wandb: self.log({"train": {'logic_acc': hmean([accuracy1, accuracy2]), "logic_acc_clf": accuracy}}) 
+            if log_wandb: self.log({"train": {'logic_acc': logic_acc, "logic_acc_clf": accuracy}})
             else: 
                 if is_train_set:
-                    self.train_logic_metrics.append({'logic_acc': hmean([accuracy1, accuracy2]), "logic_acc_clf": accuracy, "concept_purity": np.mean(accs), "concept_purity_std": np.std(accs)})
+                    self.train_logic_metrics.append({'logic_acc': logic_acc, "logic_acc_clf": accuracy, "concept_purity": np.mean(cluster_accs), "concept_purity_std": np.std(cluster_accs)})
                 else:
-                    self.val_logic_metrics.append({'logic_acc': hmean([accuracy1, accuracy2]), "logic_acc_clf": accuracy, "concept_purity": np.mean(accs), "concept_purity_std": np.std(accs)})
+                    self.val_logic_metrics.append({'logic_acc': logic_acc, "logic_acc_clf": accuracy, "concept_purity": np.mean(cluster_accs), "concept_purity_std": np.std(cluster_accs)})
         self.len_model.to(self.device)
 
 
@@ -418,7 +419,6 @@ class GLGExplainer(torch.nn.Module):
             total_losses["distribution_entropy_loss"] += distribution_entropy_loss.detach()      
         else:
             distribution_entropy_loss = torch.tensor(0., device=self.device)
-
 
         loss = len_loss + logic_loss   + prototype_distance_loss + r1_loss + r2_loss + concept_entropy_loss + div_loss + distribution_entropy_loss
         total_losses["loss"] += loss.detach()
