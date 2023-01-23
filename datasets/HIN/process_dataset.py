@@ -9,13 +9,13 @@ def load_raw_hin(gap):
     data = pd.read_csv("sociopattern_data/lh.dat", sep="\t", names=["time","A","B","fa","fb"])
     tmp = data.time.to_numpy()
     tmp = tmp - min(tmp)
-    
-    # load metadata
-    meta = pd.read_csv("sociopattern_data/lh_meta.dat", sep="\t ", names=["id","class"])
+
+    # extract metadata
     data_to_class = dict()
-    for _ , person_data in meta.iterrows():
-        n , n_class = person_data
-        data_to_class[n] = n_class
+    for _ , person_data in data.iterrows():
+        src , dest , src_type , dest_type = person_data[1:]
+        data_to_class[src] = src_type
+        data_to_class[dest] = dest_type    
 
     # create temporal snapshots
     tmp = tmp // gap
