@@ -8,8 +8,10 @@ code/imgs/*
 logs/*
 trained_models/BAMultiShapes_maxaccuracy.pt
 trained_models/BAMultiShapesMC.pt
-trained_models/BAMultiShapes.pt
-trained_models/HIN.pt
-trained_models/Mutagenicity.pt
+trained_models/BAMultiShapes_no_incorrect_samples.pt
+trained_models/HIN_no_incorrect_samples.pt
+trained_models/Mutagenicity_no_incorrect_samples.pt
 code/.ipynb_checkpoints/*
 datasets/logic*
+tmp_steve/*
+coda/__pycache__/*
