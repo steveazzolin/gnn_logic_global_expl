@@ -14,4 +14,4 @@ trained_models/Mutagenicity_no_incorrect_samples.pt
 code/.ipynb_checkpoints/*
 datasets/logic*
 tmp_steve/*
-coda/__pycache__/*
+code/__pycache__/*
