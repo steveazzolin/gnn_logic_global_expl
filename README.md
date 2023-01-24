@@ -19,13 +19,13 @@ To cite our work:
 
 ### Requirements
 
-To install the required packages, run
+To install the required packages, run:
 
 ```
 conda env create -f env.yml
 ```
 
-The following package is also needed
+The [torch-explain](https://pypi.org/project/torch-explain/) package is also needed.
 
 :warning: The updated version of torch-explain with the code to support GLGExplainer is not yet available. In case you are interested to use the code ASAP, write me an email :) 
 
