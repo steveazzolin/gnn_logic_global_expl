@@ -45,7 +45,35 @@ You can either train a new instance of GLGExplainer, or run the pre-trained mode
 
 A compact summary of how to run GLGExplainer is the following:
 
-```
-import code
+```python
+import utils
+import models
+from local_explanations import *
 
+train_data = read_bamultishapes(split="TRAIN")
+val_data = read_bamultishapes(split="VAL")
+test_data = read_bamultishapes(split="TEST")
+
+dataset_train = utils.LocalExplanationsDataset(train_data, ...)
+dataset_val = utils.LocalExplanationsDataset(val_data, ...)
+dataset_test = utils.LocalExplanationsDataset(test_data, ...)
+
+train_group_loader = utils.build_dataloader(dataset_train, ...)
+val_group_loader   = utils.build_dataloader(dataset_val, ...)
+test_group_loader  = utils.build_dataloader(dataset_test, ...)
+
+len_model    = models.LEN(hyper_params["num_prototypes"], 
+                          hyper_params["LEN_temperature"], 
+                          remove_attention=hyper_params["remove_attention"])
+le_model     = models.LEEmbedder(num_features=hyper_params ["num_le_features"], 
+                                 activation=hyper_params["activation"], 
+                                 num_hidden=hyper_params["dim_prototypes"])
+
+expl         = models.GLGExplainer(len_model, 
+                                   le_model, 
+                                   hyper_params=hyper_params,
+                                   ...
+                                  )
+expl.iterate(train_group_loader, val_group_loader, plot=True)
+expl.inspect(test_group_loader)
 ```
