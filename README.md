@@ -1,6 +1,8 @@
 # Global Explainability of GNNs via Logic Combination of Learned Concepts
 
-This repo is the official implementation of [GLGExplainer](https://arxiv.org/abs/2210.07147) presented at ICLR2023.
+This repo is the official implementation of [GLGExplainer](https://arxiv.org/abs/2210.07147) accepted at ICLR2023.
+
+To cite our work:
 
 
 ```
@@ -33,5 +35,17 @@ pip install torch-explain
 
 ### Extracting local explanations
 
+To extract local explanations you can use any available Local Explainer which meets the requirements described in our paper. For a list of most commonly used Local Explainers for GNNs you can check out [this](https://arxiv.org/abs/2210.15304) survey.
+
+Local explanations can be saved in a sub-folder similarly as done in `local_explanations\PGExplainer\` and can be read by adding a custom function in `code\local_explanations.py` to properly read the explanations.
 
 ### Running GLGExplainer
+
+You can either train a new instance of GLGExplainer, or run the pre-trained model, via the notebooks in the `code\` folder. 
+
+A compact summary of how to run GLGExplainer is the following:
+
+```
+import code
+
+```
