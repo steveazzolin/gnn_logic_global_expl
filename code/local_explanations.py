@@ -132,7 +132,7 @@ def evaluate_cutting(ori_adjs, adjs):
 ##
 # read local explanations and cut them based on a certain policy
 ##
-def read_bamultishapes(explainer="PGExplainer", dataset="BAMultiShapes", model="GCN", split="TRAIN", evaluate_method=True, remove_mix=False, min_num_include=5, manual_cut=None):
+def read_bamultishapes(explainer="PGExplainer", dataset="BAMultiShapes", model="GCN", split="TRAIN", evaluate_method=False, remove_mix=False, min_num_include=5, manual_cut=None):
     base_path = base + f"{explainer}/{dataset}/{model}/"
     adjs , edge_weights , index_stopped = [] , [] , []
     ori_adjs, ori_edge_weights, ori_classes , belonging , ori_predictions = [], [], [] , [] , []
