@@ -1,0 +1,2 @@
+The extraction of local explanations for this dataset followed the original implementation of PGExplainer at https://github.com/flyingdoog/PGExplainer
+The underlying GNN present in the repo was modified to match the hyper-parameters reported on https://arxiv.org/abs/2210.07147
