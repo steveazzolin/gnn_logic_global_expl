@@ -43,7 +43,7 @@ Local explanations can be saved in a sub-folder similarly as done in `local_expl
 
 You can either train a new instance of GLGExplainer, or run the pre-trained model, via the notebooks in the `code\` folder. 
 
-A compact summary of how to run GLGExplainer is the following:
+A compact summary of *how to train* GLGExplainer is the following:
 
 ```python
 import utils
@@ -79,8 +79,7 @@ le_model     = models.LEEmbedder(num_features=hyper_params ["num_le_features"],
 expl         = models.GLGExplainer(len_model, 
                                    le_model, 
                                    hyper_params=hyper_params,
-                                   ...
-                                  )
+                                   ...)
 
 # train GLGExplainer
 expl.iterate(train_group_loader, val_group_loader, plot=True)
