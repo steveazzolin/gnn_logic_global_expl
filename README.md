@@ -27,7 +27,7 @@ conda env create -f env.yml
 
 The [torch-explain](https://pypi.org/project/torch-explain/) package is also needed.
 
-:warning: The updated version of torch-explain with the code to support GLGExplainer is not yet available. In case you are interested to use the code ASAP, write me an email :) 
+:warning: The updated version of torch-explain with the code to support GLGExplainer is not yet available. Follow the PR [here](https://github.com/pietrobarbiero/pytorch_explain/pull/4).
 
 ```
 pip install torch-explain
