@@ -201,7 +201,7 @@ class GLGExplainer(torch.nn.Module):
                 torch.save(self.state_dict(), f"{wandb.run.dir}/epoch_{epoch}.pt")  
             if val_metrics["loss"] < best_val_loss and self.hyper["log_models"]:
                 best_val_loss = val_metrics["loss"]
-                torch.save(self.state_dict(), f"../trained_models/best_so_far_{self.dataset_name}_epoch_{epoch}.pt")
+                torch.save(self.state_dict(), f"../trained_models/best_so_far/best_so_far_{self.dataset_name}_epoch_{epoch}.pt")
 
             print(f'{epoch:3d}: Loss: {train_metrics["loss"]:.5f}, LEN: {train_metrics["len_loss"]:2f}, Acc: {train_metrics["acc_overall"]:.2f}, V. Acc: {val_metrics["acc_overall"]:.2f}, V. Loss: {val_metrics["loss"]:.5f}, V. LEN {val_metrics["len_loss"]:.3f}')
                 
@@ -209,7 +209,7 @@ class GLGExplainer(torch.nn.Module):
                 print(f"Early Stopping")
                 print(f"Loading model at epoch {self.early_stopping.best_epoch}")
                 if self.hyper["log_models"]:
-                    self.load_state_dict(torch.load(f"../trained_models/best_so_far_{self.dataset_name}_epoch_{self.early_stopping.best_epoch}.pt"))
+                    self.load_state_dict(torch.load(f"../trained_models/best_so_far/best_so_far_{self.dataset_name}_epoch_{self.early_stopping.best_epoch}.pt"))
                 else:
                     print("Model not loaded")
                 break
@@ -294,7 +294,7 @@ class GLGExplainer(torch.nn.Module):
             self.len_model.to("cpu")
             x_train = x_train.detach().cpu()
             y_train_1h = y_train_1h.cpu()
-            explanation0, explanation_raw, _ = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=0, max_accuracy=True, topk_explanations=3000, try_all=False)
+            explanation0, explanation_raw = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=0, max_accuracy=True, topk_explanations=3000, try_all=False)
             accuracy0, preds = test_explanation(explanation0, x_train, y_train_1h, target_class=0, mask=torch.arange(x_train.shape[0]).long(), material=False)
             
             cluster_accs = utils.get_cluster_accuracy(concept_predictions, le_classes)
@@ -305,7 +305,7 @@ class GLGExplainer(torch.nn.Module):
                 print("For class 0:")
                 print(accuracy0, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
 
-            explanation1, explanation_raw, _ = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=1, max_accuracy=True, topk_explanations=3000, try_all=False)
+            explanation1, explanation_raw = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=1, max_accuracy=True, topk_explanations=3000, try_all=False)
             accuracy1, preds = test_explanation(explanation1, x_train, y_train_1h, target_class=1, mask=torch.arange(x_train.shape[0]).long(), material=False)
             
             if plot:
@@ -313,15 +313,15 @@ class GLGExplainer(torch.nn.Module):
                 print(accuracy1, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
 
             if self.num_classes == 3:
-                explanation2, explanation_raw, _ = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=2, max_accuracy=True, topk_explanations=3000, try_all=False)
+                explanation2, explanation_raw = entropy.explain_class(self.len_model, x_train, y_train_1h, train_mask=torch.arange(x_train.shape[0]).long(), val_mask=torch.arange(x_train.shape[0]).long(), target_class=2, max_accuracy=True, topk_explanations=3000, try_all=False)
                 accuracy2, preds = test_explanation(explanation2, x_train, y_train_1h, target_class=2, mask=torch.arange(x_train.shape[0]).long(), material=False)
                 if plot:
                     print("For class 2:")
                     print(accuracy2, utils.rewrite_formula_to_close(utils.assemble_raw_explanations(explanation_raw)))
-                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1, explanation2], x_train, y_train_1h, model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+                accuracy, preds = test_explanations([explanation0, explanation1, explanation2], x_train, y_train_1h, mask=torch.arange(x_train.shape[0]).long(), material=False)
                 logic_acc = hmean([accuracy0, accuracy1, accuracy2])
             else:
-                accuracy, preds, unfiltered_pred = test_explanations([explanation0, explanation1], x_train, y_train_1h, model_predictions=y_pred, mask=torch.arange(x_train.shape[0]).long(), material=False, break_w_errors=False)
+                accuracy, preds = test_explanations([explanation0, explanation1], x_train, y_train_1h, mask=torch.arange(x_train.shape[0]).long(), material=False)
                 logic_acc = hmean([accuracy0, accuracy1])
 
             if plot: print("Accuracy as classifier: ", round(accuracy, 4))
