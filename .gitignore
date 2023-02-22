@@ -11,6 +11,7 @@ trained_models/BAMultiShapesMC.pt
 trained_models/BAMultiShapes_no_incorrect_samples.pt
 trained_models/HIN_no_incorrect_samples.pt
 trained_models/Mutagenicity_no_incorrect_samples.pt
+trained_models/best_so_far/
 code/.ipynb_checkpoints/*
 datasets/logic*
 tmp_steve/*
