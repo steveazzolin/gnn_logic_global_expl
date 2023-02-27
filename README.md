@@ -52,13 +52,13 @@ from local_explanations import *
 
 # read local explanations
 train_data = read_bamultishapes(split="TRAIN")
-val_data = read_bamultishapes(split="VAL")
-test_data = read_bamultishapes(split="TEST")
+val_data   = read_bamultishapes(split="VAL")
+test_data  = read_bamultishapes(split="TEST")
 
 # group local explanations into a Dataset
 dataset_train = utils.LocalExplanationsDataset(train_data, ...)
-dataset_val = utils.LocalExplanationsDataset(val_data, ...)
-dataset_test = utils.LocalExplanationsDataset(test_data, ...)
+dataset_val   = utils.LocalExplanationsDataset(val_data, ...)
+dataset_test  = utils.LocalExplanationsDataset(test_data, ...)
 
 # build a PyG DataLoader
 train_group_loader = utils.build_dataloader(dataset_train, ...)
